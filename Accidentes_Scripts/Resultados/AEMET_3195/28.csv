@@ -1,0 +1,13 @@
+0;1
+T;Temperatura media mensual/anual (°C)
+TM;Media mensual/anual de las temperaturas máximas diarias (°C)
+Tm;Media mensual/anual de las temperaturas mínimas diarias (°C)
+R;Precipitación mensual/anual media (mm)
+H;Humedad relativa media (%)
+DR;Número medio mensual/anual de días de precipitación superior o igual a 1 mm
+DN;Número medio mensual/anual de días de nieve
+DT;Número medio mensual/anual de días de tormenta
+DF;Número medio mensual/anual de días de niebla
+DH;Número medio mensual/anual de días de helada
+DD;Número medio mensual/anual de días despejados
+I;Número medio mensual/anual de horas de sol

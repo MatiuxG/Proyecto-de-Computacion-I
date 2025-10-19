@@ -1,0 +1,32 @@
+{
+  "title": "Portal de datos abiertos del Ayuntamiento de Madrid",
+  "intro": "Servicio de mapas que representa los distintos niveles de limpieza asignados a calzadas y aceras, estableciendo los servicios de limpieza básicos que se realizan en ellas y sus frecuencias. Todo ello de acuerdo al contrato de limpieza de espacios públicos en Madrid (300/2020/000547).",
+  "source_url": "https://datos.madrid.es/portal/site/egob/menuitem.c05c1f754a33a9fbe4b2e4b284f1a5a0/?vgnextoid=9cfecf300a3ce710VgnVCM1000001d4a900aRCRD&vgnextchannel=374512b9ace9f310VgnVCM100000171f5a0aRCRD&vgnextfmt=default",
+  "downloads_count": 2,
+  "other_links": [
+    {
+      "label": "geoportal.madrid.es",
+      "url": "https://geoportal.madrid.es/IDEAM_WBGEOPORTAL/dataset.iam?id=e7207a09-7ead-11ec-b24a-60634c31c0aa"
+    },
+    {
+      "label": "Geoportal",
+      "url": "https://geoportal.madrid.es/IDEAM_WBGEOPORTAL/index.iam"
+    },
+    {
+      "label": "Visor geográfico del Geoportal (pantalla completa)",
+      "url": "https://geoportal.madrid.es/IDEAM_WBGEOPORTAL/visor_ide.iam?ArcGIS=https://sigma.madrid.es/hosted/rest/services/LIMPIEZAS/LIMPIEZA_ESPACIOS_PUBLICOS/MapServer"
+    },
+    {
+      "label": "Geoportal Ayuntamiento de Madrid",
+      "url": "https://geoportal.madrid.es/"
+    },
+    {
+      "label": "Geoportal del Ayuntamiento de Madrid",
+      "url": "https://geoportal.madrid.es"
+    },
+    {
+      "label": "geoportal.madrid.es",
+      "url": "https://servpub.madrid.es/IDEAM_WBGEOPORTAL/index.iam"
+    }
+  ]
+}
