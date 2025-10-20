@@ -3,6 +3,7 @@ import re
 import io
 import sys
 import math
+import unicodedata
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, date as date_cls
@@ -11,6 +12,7 @@ import requests
 import pandas as pd
 from bs4 import BeautifulSoup
 from dateutil import parser as dtparser
+from dateutil.relativedelta import relativedelta
 import xml.etree.ElementTree as ET
 
 # --- Config fuentes ---
@@ -28,7 +30,7 @@ HARDCODED_DOWNLOADS: Dict[str, List[str]] = {
     ],
 }
 
-OUTPUT_DIR = Path(r".\Resultados\Accidentes")
+OUTPUT_DIR = Path(r".\Resultados")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 HEADERS = {
@@ -39,7 +41,6 @@ HEADERS = {
 
 CSV_EXT = (".csv",)
 JSON_EXT = (".json", ".geojson")
-
 
 # ---------------- Red / scraping ----------------
 
@@ -150,28 +151,62 @@ def load_remote_table(url: str) -> Optional[pd.DataFrame]:
     print("    [Aviso] Tipo no soportado (solo CSV/JSON).")
     return None
 
+# ---------------- Normalización texto ----------------
 
-# ---------------- Fechas / horas ----------------
+def normalize_text(s: str) -> str:
+    s = s or ""
+    s = s.strip().lower()
+    s = unicodedata.normalize("NFD", s)
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")  # quita acentos
+    return s
 
-def parse_user_hour(s: str) -> Tuple[int, int]:
-    s = s.strip().replace(".", ":")
-    if ":" in s:
-        hh, mm = s.split(":", 1)
-        return int(hh), int(mm)
-    return int(s), 0
+# ---------------- Fechas / horas / columnas ----------------
+
+def parse_user_hour(s: str) -> Optional[Tuple[int, int]]:
+    """
+    Acepta:
+      - "08", "8"                 -> 08:00
+      - "08:30", "8:30", "08:05"  -> HH:MM
+      - "8.5", "8,25", "7.75"     -> fracción de hora (min = round(fracción*60))
+    Vacío -> None (sin filtro por hora)
+    """
+    st = (s or "").strip()
+    if not st:
+        return None
+    st = st.lower().replace(" ", "").replace(",", ".").replace("h", ":")
+    if ":" in st:
+        hh_str, mm_str = st.split(":", 1)
+        if not hh_str:
+            raise ValueError("Hora inválida")
+        hh = int(hh_str)
+        mm = int(round(float(mm_str))) if mm_str else 0
+        if mm == 60:
+            hh, mm = hh + 1, 0
+        return hh, mm
+    # decimal
+    if re.match(r"^\d+(\.\d+)?$", st):
+        f = float(st)
+        hh = int(f)
+        mm = int(round((f - hh) * 60))
+        if mm == 60:
+            hh, mm = hh + 1, 0
+        return hh, mm
+    # entero
+    if st.isdigit():
+        return int(st), 0
+    raise ValueError("Formato de hora no reconocido")
 
 def parse_user_date(s: str) -> Optional[date_cls]:
     s = s.strip()
     if not s:
         return None
     try:
-        dt = dtparser.parse(s, dayfirst=False)  # espera YYYY-MM-DD por defecto
+        dt = dtparser.parse(s, dayfirst=False)  # espera YYYY-MM-DD
         return dt.date()
     except Exception:
         return None
 
 def detect_date_parts(df: pd.DataFrame) -> Optional[Tuple[str, str, str]]:
-    """Busca columnas ANO/AÑO + MES + DIA (insensible a mayúsculas/acentos)."""
     low = {c.lower(): c for c in df.columns}
     ano = low.get("año") or low.get("ano") or low.get("year") or low.get("anio")
     mes = low.get("mes") or low.get("month")
@@ -183,6 +218,23 @@ def detect_date_parts(df: pd.DataFrame) -> Optional[Tuple[str, str, str]]:
 def find_timestamp_cols(df: pd.DataFrame) -> List[str]:
     return [c for c in df.columns if any(k in str(c).lower() for k in
             ["fecha_hora","fechahora","datetime","timestamp","fecha","date"])]
+
+def find_street_columns(df: pd.DataFrame) -> List[str]:
+    """Detecta columnas de vía/dirección más comunes."""
+    STREET_KEYS = [
+        "calle","via","vía","direccion","dirección","ubicacion","ubicación",
+        "localizacion","localización","lugar","punto","domicilio","via_publica",
+        "carretera","tramo","pk","interseccion","intersección","cruce","kilometro","kilómetro",
+        "street","road","address","addr"
+    ]
+    cols = []
+    for c in df.columns:
+        lc = str(c).lower()
+        if any(k in lc for k in STREET_KEYS):
+            cols.append(c)
+    return cols
+
+# ---------------- Filtrado principal ----------------
 
 def to_hour_minute(value) -> Optional[Tuple[int, int]]:
     if pd.isna(value): return None
@@ -210,80 +262,106 @@ def to_hour_minute(value) -> Optional[Tuple[int, int]]:
     except Exception:
         return None
 
-def find_time_columns(df: pd.DataFrame) -> List[str]:
-    cols = []
-    for c in df.columns:
-        lc = str(c).lower()
-        if any(k in lc for k in ["hora","time","tiempo","h_acc","acc_hora"]):
-            cols.append(c)
-    if not cols:
-        for c in df.columns:
-            sample = df[c].dropna().astype(str).head(60).str.strip()
-            hhmm = sample.str.contains(r"^\d{1,2}[:hH]\d{2}$", regex=True).mean()
-            only_h = sample.str.match(r"^\d{1,2}$", na=False).mean()
-            if hhmm > 0.4 or only_h > 0.6:
-                cols.append(c)
-    return cols
-
-def filter_df_by_date_hour(df: pd.DataFrame, target_date: Optional[date_cls], hh: int, mm: int) -> pd.DataFrame:
-    """Filtra por fecha (si viene) y hora."""
+def filter_df(df: pd.DataFrame,
+              start_date: Optional[date_cls],
+              end_date: Optional[date_cls],
+              street_query: Optional[str],
+              hour_mm: Optional[Tuple[int, int]]) -> pd.DataFrame:
+    """
+    Aplica filtros:
+      - fecha en [start_date, end_date] si se proporcionan
+      - calle (contains insensible a acentos)
+      - hora (exacta HH:MM; si dataset no trae minutos, cae a solo HH)
+    """
     if df.empty:
         return df
 
-    # 1) Si hay timestamp claro
-    for c in find_timestamp_cols(df):
-        try:
-            ts = pd.to_datetime(df[c], errors="coerce", dayfirst=True)
-            if ts.notna().mean() > 0.5:
-                mask = pd.Series([True] * len(df))
-                if target_date is not None:
-                    mask &= (ts.dt.date == target_date)
-                mask &= (ts.dt.hour == hh) & (ts.dt.minute == mm)
-                out = df[mask]
-                if not out.empty:
-                    return out
-        except Exception:
-            pass
+    # 1) Fecha
+    date_mask: Optional[pd.Series] = None
+    if start_date and end_date:
+        # timestamp completo
+        for c in find_timestamp_cols(df):
+            try:
+                ts = pd.to_datetime(df[c], errors="coerce", dayfirst=True)
+                if ts.notna().mean() > 0.5:
+                    m = (ts.dt.date >= start_date) & (ts.dt.date <= end_date)
+                    date_mask = m if date_mask is None else (date_mask | m)
+            except Exception:
+                pass
+        # partes ANO/MES/DIA
+        parts = detect_date_parts(df)
+        if parts:
+            ano, mes, dia = parts
+            y = pd.to_numeric(df[ano], errors="coerce")
+            m = pd.to_numeric(df[mes], errors="coerce")
+            d = pd.to_numeric(df[dia], errors="coerce")
+            # construimos date como strings para comparar rango
+            try:
+                built = pd.to_datetime(dict(year=y, month=m, day=d), errors="coerce")
+                m2 = (built.dt.date >= start_date) & (built.dt.date <= end_date)
+                date_mask = m2 if date_mask is None else (date_mask | m2)
+            except Exception:
+                pass
+        # si no logramos ninguna máscara de fecha y se pidió fecha -> devolvemos vacío
+        if date_mask is None:
+            return df.iloc[0:0]
 
-    # 2) Partes separadas ANO/AÑO + MES + DIA
-    parts = detect_date_parts(df)
-    if parts and target_date is not None:
-        ano, mes, dia = parts
-        y = pd.to_numeric(df[ano], errors="coerce")
-        m = pd.to_numeric(df[mes], errors="coerce")
-        d = pd.to_numeric(df[dia], errors="coerce")
-        mask_date = (y == target_date.year) & (m == target_date.month) & (d == target_date.day)
-        # hora por columnas separadas
-        for c in find_time_columns(df):
-            vals = df[c].apply(to_hour_minute)
-            mask_hour = vals.apply(lambda t: t is not None and (t[0] == hh and t[1] == mm))
-            out = df[mask_date & mask_hour]
-            if not out.empty:
-                return out
-            mask_hour2 = vals.apply(lambda t: t is not None and (t[0] == hh))
-            out2 = df[mask_date & mask_hour2]
-            if not out2.empty:
-                return out2
+    # 2) Calle
+    street_mask: Optional[pd.Series] = None
+    if street_query:
+        target = normalize_text(street_query)
+        cols = find_street_columns(df)
+        for c in cols:
+            try:
+                col_norm = df[c].astype(str).map(normalize_text)
+                m = col_norm.str.contains(re.escape(target), na=False)
+                street_mask = m if street_mask is None else (street_mask | m)
+            except Exception:
+                continue
+        # si no hay columnas de calle y se pidió filtro -> vacío
+        if street_mask is None:
+            return df.iloc[0:0]
 
-    # 3) Sin fecha: filtra solo por hora
-    if target_date is None:
-        for c in find_time_columns(df):
-            vals = df[c].apply(to_hour_minute)
-            mask = vals.apply(lambda t: t is not None and (t[0] == hh and t[1] == mm))
-            out = df[mask]
-            if not out.empty:
-                return out
-            mask2 = vals.apply(lambda t: t is not None and (t[0] == hh))
-            out2 = df[mask2]
-            if not out2.empty:
-                return out2
+    # 3) Hora
+    hour_mask: Optional[pd.Series] = None
+    if hour_mm is not None:
+        hh, mm = hour_mm
+        # timestamp
+        for c in find_timestamp_cols(df):
+            try:
+                ts = pd.to_datetime(df[c], errors="coerce", dayfirst=True)
+                if ts.notna().mean() > 0.5:
+                    m = (ts.dt.hour == hh) & (ts.dt.minute == mm)
+                    if m.sum() == 0:
+                        m = (ts.dt.hour == hh)  # fallback solo hora
+                    hour_mask = m if hour_mask is None else (hour_mask | m)
+            except Exception:
+                pass
+        # columnas de hora explícitas
+        H_KEYS = ["hora","time","tiempo","h_acc","acc_hora"]
+        for c in df.columns:
+            lc = str(c).lower()
+            if any(k in lc for k in H_KEYS):
+                vals = df[c].apply(to_hour_minute)
+                m = vals.apply(lambda t: t is not None and t[0] == hh and t[1] == mm)
+                if m.sum() == 0:
+                    m = vals.apply(lambda t: t is not None and t[0] == hh)
+                hour_mask = m if hour_mask is None else (hour_mask | m)
 
-    return df.iloc[0:0]
-
+    # 4) Combinar
+    mask = pd.Series([True] * len(df))
+    if date_mask is not None:   mask &= date_mask.fillna(False)
+    if street_mask is not None: mask &= street_mask.fillna(False)
+    if hour_mask is not None:   mask &= hour_mask.fillna(False)
+    return df[mask]
 
 # ---------------- Proceso por dataset ----------------
 
-def process_one(page_url: str, target_date: Optional[date_cls], hh: int, mm: int) -> pd.DataFrame:
+def process_one(page_url: str,
+                start_date: Optional[date_cls],
+                end_date: Optional[date_cls],
+                street_query: Optional[str],
+                hour_mm: Optional[Tuple[int, int]]) -> pd.DataFrame:
     print(f"\n[Procesando] {page_url}")
     try:
         html = fetch_text(page_url)
@@ -307,7 +385,7 @@ def process_one(page_url: str, target_date: Optional[date_cls], hh: int, mm: int
         if df is None or df.empty:
             continue
 
-        filtered = filter_df_by_date_hour(df, target_date, hh, mm)
+        filtered = filter_df(df, start_date, end_date, street_query, hour_mm)
         print(f"  [Filtrado] {filtered.shape} filas")
         if not filtered.empty:
             filtered = filtered.copy()
@@ -318,37 +396,49 @@ def process_one(page_url: str, target_date: Optional[date_cls], hh: int, mm: int
     print("  [Aviso] Ninguna descarga produjo filas para ese filtro.")
     return pd.DataFrame()
 
-
 # ---------------- Main ----------------
 
 def main():
-    # Pide hora
-    user_h = input("Introduce la HORA (ej: 08 o 08:30): ").strip()
-    try:
-        hh, mm = parse_user_hour(user_h)
-        assert 0 <= hh < 24 and 0 <= mm < 60
-    except Exception:
-        print("Hora inválida. Usa 08, 8, 08:30, 8:30 …")
-        sys.exit(1)
-
-    # Pide fecha (opcional)
+    # Fecha (opcional) → si se da, usaremos [fecha-3 meses, fecha]
     user_d = input("Introduce la FECHA (YYYY-MM-DD) o pulsa Enter para omitir: ").strip()
     target_date = parse_user_date(user_d)
     if user_d and target_date is None:
         print("Fecha inválida. Usa formato YYYY-MM-DD (ej: 2025-10-15).")
         sys.exit(1)
 
+    start_date = end_date = None
+    if target_date:
+        end_date = target_date
+        start_date = target_date - relativedelta(months=3)
+        print(f"[Rango de fechas] {start_date.isoformat()} → {end_date.isoformat()}")
+
+    # Calle (opcional)
+    street_query = input("Introduce la CALLE (parcial, ej: 'gran via') o pulsa Enter para omitir: ").strip()
+    if not street_query:
+        street_query = None
+
+    # Hora (opcional; admite fracciones)
+    user_h = input("Introduce la HORA (opcional: ej 08, 08:30, 8.5, 8,25) o Enter para omitir: ").strip()
+    try:
+        hour_mm = parse_user_hour(user_h) if user_h else None
+        if hour_mm:
+            hh, mm = hour_mm
+            assert 0 <= hh < 24 and 0 <= mm < 60
+    except Exception:
+        print("Hora inválida. Usa 08, 08:30, 8.5, 8,25 …")
+        sys.exit(1)
+
     parts = []
     for url in DATASET_PAGES:
         try:
-            df = process_one(url, target_date, hh, mm)
+            df = process_one(url, start_date, end_date, street_query, hour_mm)
             if not df.empty:
                 parts.append(df)
         except Exception as e:
             print(f"  [Error inesperado] {e}")
 
     if not parts:
-        print("\n[Resultado] 0 filas encontradas con ese filtro (fecha/hora).")
+        print("\n[Resultado] 0 filas encontradas con ese filtro.")
         return
 
     out = pd.concat(parts, ignore_index=True, sort=False)
@@ -358,8 +448,18 @@ def main():
             out = out.sort_values(by=c)
             break
 
-    hhmm = f"{hh:02d}{mm:02d}"
-    suffix = hhmm if target_date is None else f"{target_date.isoformat()}_{hhmm}"
+    # Nombre de archivo
+    suffix_parts = []
+    if target_date:
+        suffix_parts.append(f"{start_date.isoformat()}_{end_date.isoformat()}")
+    if street_query:
+        slug = re.sub(r"[^a-z0-9]+", "_", normalize_text(street_query)).strip("_")
+        if slug:
+            suffix_parts.append(slug)
+    if hour_mm:
+        suffix_parts.append(f"{hour_mm[0]:02d}{hour_mm[1]:02d}")
+    suffix = "__".join(suffix_parts) if suffix_parts else "sin_filtros"
+
     out_file = OUTPUT_DIR / f"accidentes_{suffix}.csv"
     out.to_csv(out_file, index=False, sep=";", encoding="utf-8")
 
@@ -367,7 +467,6 @@ def main():
     print(f"[Filas totales] {len(out)}")
     print("\n[Preview]")
     print(out.head(10))
-
 
 if __name__ == "__main__":
     main()
