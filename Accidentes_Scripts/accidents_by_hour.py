@@ -29,8 +29,7 @@ HARDCODED_DOWNLOADS: Dict[str, List[str]] = {
         "https://datos.comunidad.madrid/dataset/fb9c5a17-afb0-4e95-a7b1-186e7cacc901/resource/69a6b3e0-f711-47c5-aa2d-a87b0f82fd31/download/accidentes-de-circulacion-con-victimas-por-ubicacion-y-resultado-del-accidente.json",
     ],
 }
-
-OUTPUT_DIR = Path(r".\Resultados")
+OUTPUT_DIR = Path("./Accidentes_Scripts/Resultados")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 HEADERS = {
