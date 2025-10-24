@@ -1,1 +1,7 @@
 ﻿fecha;pollutant;open_value;open_unit;acc_value_ugm3;acc_raw;acc_unit;aqi;aqi_category;delta_ugm3_acc_minus_open
+2025-10-24;pm25;NA;NA;NA;NA;NA;28;Buena;NA
+2025-10-24;pm10;NA;NA;NA;NA;NA;28;Buena;NA
+2025-10-24;o3;NA;NA;NA;NA;NA;28;Buena;NA
+2025-10-24;no2;NA;NA;NA;NA;NA;28;Buena;NA
+2025-10-24;so2;NA;NA;NA;NA;NA;28;Buena;NA
+2025-10-24;co;NA;NA;99.0;99;µg/m³;28;Buena;NA

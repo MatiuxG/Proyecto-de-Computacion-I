@@ -13,20 +13,39 @@ from bs4 import BeautifulSoup
 from dateutil import parser as dtparser
 from dateutil.relativedelta import relativedelta
 
-# ----------- Fuentes -----------
+USE_SELENIUM_FALLBACK = True
+
+SELENIUM_AVAILABLE = False
+try:
+    if USE_SELENIUM_FALLBACK:
+        from selenium import webdriver
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.chrome.service import Service
+        import traceback
+        SELENIUM_AVAILABLE = True
+except Exception:
+    SELENIUM_AVAILABLE = False
+
+# Adjust this path to your ChromeDriver location if you plan to use Selenium
+CHROMEDRIVER_PATH = r"C:/Users/Medias/.wdm/drivers/chromedriver/win64/141.0.7390.123/chromedriver-win32/chromedriver.exe"
+
+# ============== Sources ==============
 ACCUWEATHER_AQI = "https://www.accuweather.com/es/es/madrid/308526/air-quality-index/308526"
 PAGES = [
-    # Ficha de Datos Abiertos (calidad del aire - datos diarios)
+    # Madrid Open Data ficha (daily air quality)
     "https://datos.madrid.es/sites/v/index.jsp?vgnextoid=aecb88a7e2b73410VgnVCM2000000c205a0aRCRD&vgnextchannel=374512b9ace9f310VgnVCM100000171f5a0aRCRD",
 ]
 
-# ----------- Salida -----------
+# ============== Output ==============
 OUTPUT_DIR = Path("./CalidadAire_Scripts/Resultados")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUT_FILE_LOG = OUTPUT_DIR / "calidad_aire_filtrado.csv"
 OUT_FILE_COMPARE = OUTPUT_DIR / "calidad_aire_comparado.csv"
 
-# ----------- Red -----------
+# ============== Network ==============
 HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/json,text/csv,*/*",
     "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
@@ -36,7 +55,6 @@ REQ_TIMEOUT = 45
 CSV_EXT = (".csv",)
 JSON_EXT = (".json", ".geojson")
 
-# Excluir ruido en detección de enlaces de datos
 EXCLUDE_PATTERNS = [
     "wms", "wmts", "ogc", "service", "arcgis", "esri",
     ".zip", ".shp", ".dbf", ".prj", ".kml", ".kmz",
@@ -44,15 +62,13 @@ EXCLUDE_PATTERNS = [
 ]
 PREFERRED_HINTS = ["download", "descarg", "csv", "json"]
 
-# Overrides por si hubiera una URL directa conocida
 OVERRIDES: Dict[str, str] = {
-    # "aecb88a7e2b73410": "https://datos.madrid.es/egob/catalogo/201410-10306624-calidad-aire-diario.csv"
+    "aecb88a7e2b73410": "https://datos.madrid.es/egob/catalogo/201410-10306624-calidad-aire-diario.csv"
 }
 
-# Margen por defecto si el usuario indica fecha
+
 MONTHS_BACK_DEFAULT = 2
 
-# Mapas de contaminantes (Madrid suele usar códigos MAGNITUD)
 MAGNITUD_MAP = {
     1:  "so2",
     6:  "co",
@@ -62,10 +78,9 @@ MAGNITUD_MAP = {
     10: "pm10",
     12: "pm25",
 }
-# Unidades típicas por contaminante en red de Madrid (aprox)
 OPEN_DATA_UNIT = {
     "so2": "µg/m³",
-    "co":  "mg/m³",   # Suele venir en mg/m³ en Madrid
+    "co":  "mg/m³",
     "no":  "µg/m³",
     "no2": "µg/m³",
     "o3":  "µg/m³",
@@ -73,15 +88,13 @@ OPEN_DATA_UNIT = {
     "pm25":"µg/m³",
 }
 
-# ----------- Utilidades de texto/fecha ----------
+# ============== Text/Date Utils ==============
 def normalize_text(s: str) -> str:
-    # Normaliza cadenas (quita acentos, pasa a minúsculas) para comparar
     s = (s or "").strip().lower()
     s = unicodedata.normalize("NFD", s)
     return "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
 
 def parse_user_date(s: str) -> Optional[date_cls]:
-    # Parsea la fecha introducida por el usuario
     s = (s or "").strip()
     if not s:
         return None
@@ -91,7 +104,6 @@ def parse_user_date(s: str) -> Optional[date_cls]:
         return None
 
 def parse_user_hour(s: str) -> Optional[Tuple[int, int]]:
-    # Parsea hora tolerante (08, 08:30, 8.5, 8,25, etc.)
     st = (s or "").strip()
     if not st:
         return None
@@ -99,7 +111,7 @@ def parse_user_hour(s: str) -> Optional[Tuple[int, int]]:
     if ":" in st:
         hh_str, mm_str = st.split(":", 1)
         if not hh_str:
-            raise ValueError("Hora inválida")
+            raise ValueError("Invalid hour")
         hh = int(hh_str)
         mm = int(round(float(mm_str))) if mm_str else 0
         if mm == 60: hh, mm = hh + 1, 0
@@ -112,10 +124,9 @@ def parse_user_hour(s: str) -> Optional[Tuple[int, int]]:
         return hh, mm
     if st.isdigit():
         return int(st), 0
-    raise ValueError("Formato de hora no reconocido")
+    raise ValueError("Unrecognized hour format")
 
 def fetch_html(url: str) -> str:
-    # Descarga HTML con control de codificación
     r = requests.get(url, headers=HEADERS, timeout=REQ_TIMEOUT)
     r.raise_for_status()
     if not r.encoding or r.encoding.lower() in ("ascii", "utf-8"):
@@ -123,14 +134,12 @@ def fetch_html(url: str) -> str:
     return r.text
 
 def make_soup(html: str) -> BeautifulSoup:
-    # Crea objeto soup
     try:
         return BeautifulSoup(html, "lxml")
     except Exception:
         return BeautifulSoup(html, "html.parser")
 
 def absolutize(base_url: str, href: str) -> str:
-    # Convierte enlaces relativos a absolutos
     from urllib.parse import urljoin
     href = href.strip()
     if href.startswith("//"):
@@ -140,7 +149,6 @@ def absolutize(base_url: str, href: str) -> str:
     return href
 
 def head_or_get_headers(url: str) -> Optional[requests.Response]:
-    # Intenta HEAD y cae a GET si los headers no informan
     try:
         r = requests.head(url, headers=HEADERS, timeout=REQ_TIMEOUT, allow_redirects=True)
         if r.status_code >= 400:
@@ -155,7 +163,6 @@ def head_or_get_headers(url: str) -> Optional[requests.Response]:
         return None
 
 def content_says_data(resp: requests.Response, url: str) -> bool:
-    # Comprueba si un URL es CSV/JSON por headers o por filename
     ct = (resp.headers.get("Content-Type") or "").lower()
     cd = (resp.headers.get("Content-Disposition") or "")
     ul = url.lower()
@@ -171,7 +178,6 @@ def content_says_data(resp: requests.Response, url: str) -> bool:
     return False
 
 def find_valid_data_url_from_page(page_url: str, soup: BeautifulSoup) -> Optional[str]:
-    # Localiza el mejor enlace de datos en la ficha
     for key, forced in OVERRIDES.items():
         if key in page_url:
             return forced
@@ -206,7 +212,6 @@ def find_valid_data_url_from_page(page_url: str, soup: BeautifulSoup) -> Optiona
     return None
 
 def load_remote_table(url: str) -> Optional[pd.DataFrame]:
-    # Carga robusta para CSV/JSON
     r = requests.get(url, headers=HEADERS, timeout=60)
     r.raise_for_status()
     ctype = (r.headers.get("Content-Type") or "").lower()
@@ -232,15 +237,14 @@ def load_remote_table(url: str) -> Optional[pd.DataFrame]:
         return pd.json_normalize(data)
     return None
 
-# ----------- Ventana temporal ----------
+# ============== Time Window ==============
 def in_date_window(d: date_cls, target_date: Optional[date_cls], months_back: int) -> bool:
-    # Verdadero si d está entre [target_date - months_back, target_date]
     if target_date is None:
         return True
     start = target_date - relativedelta(months=months_back)
     return start <= d <= target_date
 
-# ----------- Localización de columnas ----------
+# ============== Column Helpers ==============
 def find_timestamp_cols(df: pd.DataFrame) -> List[str]:
     return [c for c in df.columns if any(k in str(c).lower() for k in
             ["fecha_hora","fechahora","datetime","timestamp","fecha","date","hora","time"])]
@@ -255,9 +259,8 @@ def find_location_columns(df: pd.DataFrame) -> List[str]:
     ]
     return [c for c in df.columns if any(k in str(c).lower() for k in keys)]
 
-# ----------- Hora auxiliar ----------
+# ============== Hour Utils ==============
 def to_hour_minute(value) -> Optional[Tuple[int, int]]:
-    # Convierte distintos formatos en (hh,mm) si procede
     if pd.isna(value): return None
     if isinstance(value, pd.Timestamp): return value.hour, value.minute
     if isinstance(value, datetime): return value.hour, value.minute
@@ -274,7 +277,7 @@ def to_hour_minute(value) -> Optional[Tuple[int, int]]:
     if m:
         return int(m.group(1)), int(m.group(2) or 0)
     if sv.isdigit():
-        hh = int(sv); 
+        hh = int(sv)
         if 0 <= hh < 24: return hh, 0
     try:
         dt = dtparser.parse(sv, dayfirst=True, fuzzy=True)
@@ -282,14 +285,14 @@ def to_hour_minute(value) -> Optional[Tuple[int, int]]:
     except Exception:
         return None
 
-# ----------- Filtro fila a fila ----------
+# ============== Row Filter ==============
 def row_matches_filters(row: pd.Series,
                         target_date: Optional[date_cls],
                         hour_mm: Optional[Tuple[int,int]],
                         location: Optional[str],
                         df_cols: List[str],
                         months_back: int) -> bool:
-    # ---- Fecha/Hora ----
+    # Date/Time
     if target_date or hour_mm:
         match_time = False
         for c in df_cols:
@@ -318,7 +321,7 @@ def row_matches_filters(row: pd.Series,
         if not match_time:
             return False
 
-        # Intento adicional de fecha si no hubo timestamp claro
+        # Additional date check
         if target_date:
             for c in df_cols:
                 if "fecha" in str(c).lower() or "date" in str(c).lower():
@@ -328,7 +331,7 @@ def row_matches_filters(row: pd.Series,
                             return False
                         break
 
-    # ---- Ubicación ----
+    # Location
     if location:
         target = normalize_text(location)
         loc_cols = find_location_columns(pd.DataFrame(columns=df_cols))
@@ -347,9 +350,8 @@ def row_matches_filters(row: pd.Series,
 
     return True
 
-# ----------- AQI y contaminantes (AccuWeather) -----------
+# ============== AQI Category ==============
 def category_from_aqi(aqi: Optional[str]) -> Optional[str]:
-    # Mapea categoría desde el valor AQI (EPA)
     if aqi is None:
         return None
     try:
@@ -364,21 +366,74 @@ def category_from_aqi(aqi: Optional[str]) -> Optional[str]:
     if 301 <= v <= 500:  return "Peligrosa"
     return None
 
+# ============== Selenium Helpers ==============
+def _map_by_key(by_key: str):
+    """Map a simple string to Selenium's By.* constant."""
+    if not SELENIUM_AVAILABLE:
+        return None
+    by_key = (by_key or "").strip().lower()
+    mapping = {
+        "id": By.ID,
+        "name": By.NAME,
+        "xpath": By.XPATH,
+        "css_selector": By.CSS_SELECTOR,
+        "css": By.CSS_SELECTOR,
+        "class_name": By.CLASS_NAME,
+        "link_text": By.LINK_TEXT,
+        "partial_link_text": By.PARTIAL_LINK_TEXT,
+        "tag_name": By.TAG_NAME,
+    }
+    return mapping.get(by_key)
+
+def fetch_air_quality_index_selenium(url: str, selector: dict) -> Optional[str]:
+    """
+    Minimal Selenium fetch to get dynamic AQI when static HTML parsing fails.
+    selector example: {"by": "class_name", "value": "aq-number"}
+    """
+    if not SELENIUM_AVAILABLE:
+        return None
+
+    chrome_options = Options()
+    # Uncomment headless if you prefer no browser UI:
+    # chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--no-sandbox")
+    # chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+
+    driver = webdriver.Chrome(service=Service(CHROMEDRIVER_PATH), options=chrome_options)
+    try:
+        driver.get(url)
+        by = _map_by_key(selector.get("by", "class_name"))
+        value = selector.get("value", "aq-number")
+        if by is None:
+            return None
+        aqi_element = WebDriverWait(driver, 40).until(
+            EC.visibility_of_element_located((by, value))
+        )
+        txt = (aqi_element.text or "").strip()
+        return txt if txt else None
+    except Exception as e:
+        print(f"[Selenium] Error fetching AQI: {e}")
+        traceback.print_exc()
+        return None
+    finally:
+        driver.quit()
+
+# ============== AccuWeather Parsing ==============
 def parse_accuweather_aqi(html: str) -> Dict[str, Optional[str]]:
     """
-    Extrae AQI y contaminantes con valor y unidad (µg/m³ o ppm si aparece).
+    Extract AQI and pollutants (value + unit) from AccuWeather page text.
     """
     soup = make_soup(html)
     text = soup.get_text("\n", strip=True)
 
-    # AQI numérico
+    # Numeric AQI
     aqi = None
     m_aqi = re.search(r"\b(\d{1,3})\s*AQI\b", text, flags=re.I)
     if m_aqi:
         aqi = m_aqi.group(1)
     aqi_cat = category_from_aqi(aqi)
 
-    # Config de contaminantes
     pol_keys = {
         "PM 2.5": "pm25", "PM 2,5": "pm25", "PM2.5": "pm25",
         "PM 10": "pm10",  "PM10": "pm10",
@@ -388,7 +443,6 @@ def parse_accuweather_aqi(html: str) -> Dict[str, Optional[str]]:
         "CO": "co",
     }
 
-    # Columnas de salida
     out = {
         "pm25_ugm3": None, "pm10_ugm3": None, "o3_ugm3": None,
         "no2_ugm3": None, "so2_ugm3": None, "co_ugm3": None,
@@ -400,7 +454,7 @@ def parse_accuweather_aqi(html: str) -> Dict[str, Optional[str]]:
         "co_raw": None,  "co_unit": None,
     }
 
-    # Busca "valor + unidad" cerca del nombre del contaminante
+    # Capture "value + unit" near pollutant name
     for key, short in pol_keys.items():
         patt = rf"{re.escape(key)}(.{{0,300}}?)(\d+(?:[.,]\d+)?)\s*(µg/m³|ug/m3|ppm)"
         matches = list(re.finditer(patt, text, flags=re.I | re.S))
@@ -416,31 +470,68 @@ def parse_accuweather_aqi(html: str) -> Dict[str, Optional[str]]:
     return {"aqi": aqi, "aqi_category": aqi_cat, **out}
 
 def scrape_accuweather_row() -> pd.DataFrame:
-    # Devuelve una fila con AQI+contaminantes y fecha/hora actuales
+    """
+    Try static HTML parse first. If no data is found and Selenium fallback is enabled
+    and available, try to fetch at least the AQI using Selenium.
+    """
+    parsed = {}
     try:
         html = fetch_html(ACCUWEATHER_AQI)
+        parsed = parse_accuweather_aqi(html)
     except Exception:
+        parsed = {}
+
+    # If static parse yielded nothing, try Selenium AQI fallback
+    if not any(parsed.values()) and USE_SELENIUM_FALLBACK and SELENIUM_AVAILABLE:
+        aqi_val = fetch_air_quality_index_selenium(
+            ACCUWEATHER_AQI,
+            {"by": "class_name", "value": "aq-number"}  # Known AQI class in AccuWeather
+        )
+        if aqi_val:
+            parsed = {"aqi": aqi_val, "aqi_category": category_from_aqi(aqi_val)}
+
+    # If still nothing, return empty
+    if not parsed or not any(parsed.values()):
         return pd.DataFrame()
-    parsed = parse_accuweather_aqi(html)
-    if not any(parsed.values()):
-        return pd.DataFrame()
+
     now = datetime.now()
     row = {
         "__fuente": ACCUWEATHER_AQI,
         "fecha": now.strftime("%Y-%m-%d"),
         "hora": now.strftime("%H:%M"),
         "origen": "AccuWeather",
-        **parsed
+        **{
+            # Ensure all pollutant fields exist in the output schema
+            "aqi": parsed.get("aqi"),
+            "aqi_category": parsed.get("aqi_category"),
+            "pm25_ugm3": parsed.get("pm25_ugm3"),
+            "pm10_ugm3": parsed.get("pm10_ugm3"),
+            "o3_ugm3": parsed.get("o3_ugm3"),
+            "no2_ugm3": parsed.get("no2_ugm3"),
+            "so2_ugm3": parsed.get("so2_ugm3"),
+            "co_ugm3": parsed.get("co_ugm3"),
+            "pm25_raw": parsed.get("pm25_raw"),
+            "pm25_unit": parsed.get("pm25_unit"),
+            "pm10_raw": parsed.get("pm10_raw"),
+            "pm10_unit": parsed.get("pm10_unit"),
+            "o3_raw": parsed.get("o3_raw"),
+            "o3_unit": parsed.get("o3_unit"),
+            "no2_raw": parsed.get("no2_raw"),
+            "no2_unit": parsed.get("no2_unit"),
+            "so2_raw": parsed.get("so2_raw"),
+            "so2_unit": parsed.get("so2_unit"),
+            "co_raw": parsed.get("co_raw"),
+            "co_unit": parsed.get("co_unit"),
+        }
     }
     return pd.DataFrame([row])
 
-# ----------- Procesado de Datos Abiertos -----------
+# ============== Open Data Processing ==============
 def process_page_filtered_full(page_url: str,
                                target_date: Optional[date_cls],
                                hour_mm: Optional[Tuple[int,int]],
                                location: Optional[str],
                                months_back: int) -> pd.DataFrame:
-    # Descarga ficha y encuentra URL de datos
     try:
         html = fetch_html(page_url)
     except Exception:
@@ -465,7 +556,7 @@ def process_page_filtered_full(page_url: str,
     df2["__fuente"] = data_url
     df2["origen"] = "DatosAbiertosMadrid"
 
-    # Detectar fecha
+    # Date detection
     fecha_col = None
     for c in df2.columns:
         if any(k in str(c).lower() for k in ["fecha_hora","fechahora","datetime","timestamp","fecha","date"]):
@@ -490,12 +581,10 @@ def process_page_filtered_full(page_url: str,
         else:
             df2["__fecha_dt"] = pd.NaT
 
-    # Filtro por ventana temporal (si hay target date)
     if target_date:
         mask = df2["__fecha_dt"].apply(lambda x: pd.notna(x) and in_date_window(x, target_date, months_back))
         df2 = df2[mask]
 
-    # Filtro por ubicación si procede
     if location:
         loc_cols = find_location_columns(df2)
         if loc_cols:
@@ -508,13 +597,8 @@ def process_page_filtered_full(page_url: str,
 
     return df2.reset_index(drop=True)
 
-# ----------- Agregación ciudad por día (Datos Abiertos) -----------
+# ============== City Daily Aggregation ==============
 def normalize_pollutant_from_row(row: pd.Series) -> Optional[str]:
-    """
-    Intenta inferir el contaminante estándar ('pm25','pm10','o3','no2','so2','co')
-    a partir de códigos o nombres en la fila.
-    """
-    # Por código MAGNITUD
     for key in ["MAGNITUD", "magnitud", "cod_magnitud", "codigo_magnitud"]:
         if key in row.index:
             try:
@@ -522,8 +606,6 @@ def normalize_pollutant_from_row(row: pd.Series) -> Optional[str]:
                 return MAGNITUD_MAP.get(code)
             except Exception:
                 pass
-
-    # Por nombre en alguna columna
     txt = " ".join([str(row.get(c, "")) for c in row.index]).lower()
     mapping = {
         "pm2.5": "pm25", "pm 2.5": "pm25", "pm 2,5": "pm25", "pm25": "pm25",
@@ -539,12 +621,6 @@ def normalize_pollutant_from_row(row: pd.Series) -> Optional[str]:
     return None
 
 def extract_value_from_row(row: pd.Series) -> Optional[float]:
-    """
-    Extrae un valor numérico de la fila. Intenta:
-      - 'valor' o 'concentracion' directas
-      - si hay columnas horarias H01..H24: usa media (ignorando nulos)
-    """
-    # Valor/Concentración directa
     for key in ["VALOR","valor","concentracion","concentración","value","median","media"]:
         if key in row.index:
             try:
@@ -552,7 +628,6 @@ def extract_value_from_row(row: pd.Series) -> Optional[float]:
             except Exception:
                 pass
 
-    # Columnas horarias H01..H24 (o variantes)
     hours = []
     for h in range(1, 25):
         for cand in (f"H{h:02d}", f"h{h:02d}", f"hora_{h:02d}", f"hora{h:02d}", f"V{h:02d}"):
@@ -570,12 +645,6 @@ def extract_value_from_row(row: pd.Series) -> Optional[float]:
     return None
 
 def build_city_daily_agg(df_open: pd.DataFrame) -> pd.DataFrame:
-    """
-    Construye una tabla ciudad por día:
-      columnas: fecha, pollutant, open_value, open_unit
-      - 'open_value' es media entre estaciones (si hay varias).
-      - 'open_unit' se toma de OPEN_DATA_UNIT según el contaminante.
-    """
     if df_open is None or df_open.empty or "__fecha_dt" not in df_open.columns:
         return pd.DataFrame(columns=["fecha","pollutant","open_value","open_unit"])
 
@@ -602,12 +671,8 @@ def build_city_daily_agg(df_open: pd.DataFrame) -> pd.DataFrame:
     agg["open_unit"] = agg["pollutant"].map(OPEN_DATA_UNIT).fillna("NA")
     return agg
 
-# ----------- Accu → formato largo -----------
+# ============== Accu → Long Format ==============
 def accuweather_to_long(df_acc: pd.DataFrame) -> pd.DataFrame:
-    """
-    Convierte la fila AccuWeather a formato largo por contaminante:
-      columnas: fecha, pollutant, acc_value_ugm3, acc_raw, acc_unit, aqi, aqi_category
-    """
     if df_acc is None or df_acc.empty:
         return pd.DataFrame(columns=["fecha","pollutant","acc_value_ugm3","acc_raw","acc_unit","aqi","aqi_category"])
     row = df_acc.iloc[0].to_dict()
@@ -628,10 +693,9 @@ def accuweather_to_long(df_acc: pd.DataFrame) -> pd.DataFrame:
         })
     return pd.DataFrame(out)
 
-# ----------- Comparación entre fuentes (con blindajes) -----------
+# ============== Compare Sources ==============
 def compare_sources(df_acc_long: pd.DataFrame, df_open_agg: pd.DataFrame,
                     target_date: Optional[date_cls], months_back: int) -> pd.DataFrame:
-    # --- Normaliza df_open_agg ---
     required_cols = ["fecha", "pollutant", "open_value", "open_unit"]
     if df_open_agg is None or not isinstance(df_open_agg, pd.DataFrame) or df_open_agg.empty:
         df_open_agg = pd.DataFrame(columns=required_cols)
@@ -641,7 +705,6 @@ def compare_sources(df_acc_long: pd.DataFrame, df_open_agg: pd.DataFrame,
                 df_open_agg[c] = pd.NA
         df_open_agg["fecha"] = pd.to_datetime(df_open_agg["fecha"], errors="coerce").dt.date
 
-    # --- Normaliza df_acc_long ---
     acc_cols = ["fecha","pollutant","acc_value_ugm3","acc_raw","acc_unit","aqi","aqi_category"]
     if df_acc_long is None or not isinstance(df_acc_long, pd.DataFrame) or df_acc_long.empty:
         df_acc_long = pd.DataFrame(columns=acc_cols)
@@ -651,12 +714,10 @@ def compare_sources(df_acc_long: pd.DataFrame, df_open_agg: pd.DataFrame,
                 df_acc_long[c] = pd.NA
         df_acc_long["fecha"] = pd.to_datetime(df_acc_long["fecha"], errors="coerce").dt.date
 
-    # --- Filtro temporal (si target_date) ---
     if target_date and not df_open_agg.empty:
         mask = df_open_agg["fecha"].apply(lambda d: pd.notna(d) and in_date_window(d, target_date, months_back))
         df_open_agg = df_open_agg[mask].copy()
 
-    # --- Unión por fecha+contaminante (histórico = open data como base) ---
     merged = df_open_agg.merge(
         df_acc_long,
         on=["fecha","pollutant"],
@@ -664,7 +725,6 @@ def compare_sources(df_acc_long: pd.DataFrame, df_open_agg: pd.DataFrame,
         suffixes=("_open","_acc")
     )
 
-    # --- Delta en µg/m³ cuando ambas fuentes están en µg/m³ ---
     def delta_row(r):
         try:
             v_open = float(r["open_value"]) if r["open_value"] not in (None, "NA", "") else None
@@ -675,15 +735,25 @@ def compare_sources(df_acc_long: pd.DataFrame, df_open_agg: pd.DataFrame,
         except Exception:
             return None
 
-    if not merged.empty:
-        merged["delta_ugm3_acc_minus_open"] = merged.apply(delta_row, axis=1)
-        merged = merged.sort_values(["fecha","pollutant"]).reset_index(drop=True)
-    else:
-        merged["delta_ugm3_acc_minus_open"] = pd.Series(dtype=float)
+        # If open data is empty but we have AccuWeather, return AccuWeather rows
+    if merged.empty and not df_acc_long.empty:
+        acc_only = df_acc_long.copy()
+        acc_only["open_value"] = pd.NA
+        acc_only["open_unit"] = pd.NA
+        acc_only["delta_ugm3_acc_minus_open"] = pd.NA
+        # Orden final consistente
+        cols = ["fecha","pollutant","open_value","open_unit",
+                "acc_value_ugm3","acc_raw","acc_unit",
+                "aqi","aqi_category","delta_ugm3_acc_minus_open"]
+        for c in cols:
+            if c not in acc_only.columns:
+                acc_only[c] = pd.NA
+        return acc_only[cols]
 
     return merged
 
-# ----------- Main ----------
+
+# ============== Main ==============
 def main():
     print("=== COMPARADOR CLIMA / CALIDAD DEL AIRE (Madrid) ===")
     user_date = input("Fecha (YYYY-MM-DD) o Enter para omitir: ").strip()
@@ -703,7 +773,6 @@ def main():
 
     location = input("Estación / Ubicación (opcional) o Enter para omitir: ").strip() or None
 
-    # Hora opcional (se usa solo si alguna fuente tiene hora por registro)
     user_hour = input("Hora (ej: 08, 08:30, 8.5, 8,25) o Enter para omitir: ").strip()
     try:
         hour_mm = parse_user_hour(user_hour) if user_hour else None
@@ -714,10 +783,10 @@ def main():
         print("Hora inválida. Usa 08, 08:30, 8.5, 8,25 …")
         sys.exit(1)
 
-    # 1) AccuWeather (foto actual)
+    # 1) AccuWeather (current snapshot) with Selenium fallback
     acc_df = scrape_accuweather_row()
 
-    # 2) Datos Abiertos (filtrado)
+    # 2) Open Data (filtered)
     parts = []
     for url in PAGES:
         try:
@@ -729,12 +798,11 @@ def main():
 
     open_df = pd.concat(parts, ignore_index=True, sort=False) if parts else pd.DataFrame()
 
-    # ---- Log consolidado (todas las filas filtradas) ----
+    # ---- Log consolidated ----
     log_parts = []
     if not acc_df.empty:
         log_parts.append(acc_df.copy())
     if not open_df.empty:
-        # Para el log, intentar rellenar 'fecha' legible
         if "__fecha_dt" in open_df.columns and "fecha" not in open_df.columns:
             tmp = open_df.copy()
             tmp["fecha"] = tmp["__fecha_dt"].astype(str)
@@ -744,7 +812,6 @@ def main():
 
     if log_parts:
         out_log = pd.concat(log_parts, ignore_index=True, sort=False)
-        # Relleno NA/espacios
         out_log = out_log.fillna("NA")
         for c in out_log.columns:
             try:
@@ -757,7 +824,7 @@ def main():
         pd.DataFrame(columns=["__fuente"]).to_csv(OUT_FILE_LOG, index=False, encoding="utf-8-sig", sep=";")
         print(f"[OK] Log vacío (sin datos): {OUT_FILE_LOG.resolve()}")
 
-    # ---- Comparación por fecha/contaminante ----
+    # ---- Comparison (date/pollutant) ----
     open_agg = build_city_daily_agg(open_df) if not open_df.empty else pd.DataFrame(
         columns=["fecha","pollutant","open_value","open_unit"]
     )
@@ -766,7 +833,6 @@ def main():
     )
     comp_df = compare_sources(acc_long, open_agg, target_date, months_back)
 
-    # Columnas ordenadas para la comparación
     prefer_cols = [
         "fecha","pollutant",
         "open_value","open_unit",
@@ -780,7 +846,6 @@ def main():
     else:
         comp_df = pd.DataFrame(columns=prefer_cols)
 
-    # Guardar comparación
     comp_df_out = comp_df.copy()
     comp_df_out = comp_df_out.fillna("NA")
     for c in comp_df_out.columns:
@@ -792,7 +857,6 @@ def main():
     comp_df_out.to_csv(OUT_FILE_COMPARE, index=False, encoding="utf-8-sig", sep=";")
     print(f"[OK] Comparación guardada: {OUT_FILE_COMPARE.resolve()}")
 
-    # Muestra breve por consola
     try:
         print("\n=== PREVIEW COMPARACIÓN ===")
         print(comp_df.head(12))
