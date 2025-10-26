@@ -195,7 +195,8 @@ def run_script(name, path: Path, stdin_text: str|None, hard_timeout: int, idle_t
     info["stderr"] = "".join(err_buf)
     info["returncode"] = proc.returncode if not killed else -1
     info["ok"] = (info["returncode"] == 0)
-    print(f"[DONE] {name}: {'OK' if info['ok'] else f'ERROR ({info['returncode']})'}")
+    status = 'OK' if info['ok'] else f"ERROR ({info['returncode']})"
+    print(f"[DONE] {name}: {status}")
     return info
 
 # ---------- discover outputs ----------
