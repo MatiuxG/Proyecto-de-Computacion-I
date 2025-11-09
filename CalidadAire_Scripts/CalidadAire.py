@@ -1,135 +1,120 @@
+# -*- coding: utf-8 -*-
+# Code in English, comments in Spanish
+
 import re
 import io
-import sys
-import math
+import csv
 import unicodedata
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 from datetime import datetime, date as date_cls
 
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
-from dateutil import parser as dtparser
 from dateutil.relativedelta import relativedelta
 
-USE_SELENIUM_FALLBACK = True
+# ================================
+# Config
+# ================================
 
-SELENIUM_AVAILABLE = False
-try:
-    if USE_SELENIUM_FALLBACK:
-        from selenium import webdriver
-        from selenium.webdriver.common.by import By
-        from selenium.webdriver.support.ui import WebDriverWait
-        from selenium.webdriver.support import expected_conditions as EC
-        from selenium.webdriver.chrome.options import Options
-        from selenium.webdriver.chrome.service import Service
-        import traceback
-        SELENIUM_AVAILABLE = True
-except Exception:
-    SELENIUM_AVAILABLE = False
-
-# Adjust this path to your ChromeDriver location if you plan to use Selenium
-CHROMEDRIVER_PATH = r"C:/Users/Medias/.wdm/drivers/chromedriver/win64/141.0.7390.123/chromedriver-win32/chromedriver.exe"
-
-# ============== Sources ==============
-ACCUWEATHER_AQI = "https://www.accuweather.com/es/es/madrid/308526/air-quality-index/308526"
 PAGES = [
-    # Madrid Open Data ficha (daily air quality)
+    # Ficha "Calidad del aire: datos diarios desde 2001"
     "https://datos.madrid.es/sites/v/index.jsp?vgnextoid=aecb88a7e2b73410VgnVCM2000000c205a0aRCRD&vgnextchannel=374512b9ace9f310VgnVCM100000171f5a0aRCRD",
 ]
 
-# ============== Output ==============
-OUTPUT_DIR = Path("./CalidadAire_Scripts/Resultados")
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-OUT_FILE_LOG = OUTPUT_DIR / "calidad_aire_filtrado.csv"
-OUT_FILE_COMPARE = OUTPUT_DIR / "calidad_aire_comparado.csv"
-
-# ============== Network ==============
-HEADERS = {
-    "Accept": "text/html,application/xhtml+xml,application/json,text/csv,*/*",
-    "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) ClimaComparer/1.0"
-}
-REQ_TIMEOUT = 45
-CSV_EXT = (".csv",)
-JSON_EXT = (".json", ".geojson")
-
-EXCLUDE_PATTERNS = [
-    "wms", "wmts", "ogc", "service", "arcgis", "esri",
-    ".zip", ".shp", ".dbf", ".prj", ".kml", ".kmz",
-    ".pdf", ".rdf", ".xml", "sparql", "mailto:", "javascript:", "#"
-]
-PREFERRED_HINTS = ["download", "descarg", "csv", "json"]
-
+# Override directo al CSV estable de diarios
 OVERRIDES: Dict[str, str] = {
     "aecb88a7e2b73410": "https://datos.madrid.es/egob/catalogo/201410-10306624-calidad-aire-diario.csv"
 }
 
+# Catálogos de estaciones candidatos (el script probará en orden)
+STATIONS_CATALOG_CANDIDATES = [
+    "https://datos.madrid.es/egob/catalogo/201210-0-estaciones-calidad-aire.csv",
+    "https://datos.madrid.es/egob/catalogo/201210-0-estaciones-calidad-aire.json",
+    "https://datos.madrid.es/egob/catalogo/201210-0-red-calidad-aire-estaciones.csv",
+    "https://datos.madrid.es/egob/catalogo/201210-0-red-calidad-aire-estaciones.json",
+    "https://datos.madrid.es/egob/catalogo/201210-0-red-vigilancia-calidad-aire-estaciones.csv",
+    "https://datos.madrid.es/egob/catalogo/201210-0-red-vigilancia-calidad-aire-estaciones.json",
+]
 
-MONTHS_BACK_DEFAULT = 2
+OUTPUT_DIR = Path("./CalidadAire_Scripts/Resultados")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+OUT_FILE = OUTPUT_DIR / "datasheet_calidad_aire.csv"
+EXTRAS_FILE = OUTPUT_DIR / "extras_calidad_aire.csv"
+DEBUG_HEAD = OUTPUT_DIR / "debug_calidad_aire_head.csv"
 
-MAGNITUD_MAP = {
-    1:  "so2",
-    6:  "co",
-    7:  "no",
-    8:  "no2",
-    9:  "o3",
-    10: "pm10",
-    12: "pm25",
+# CSV local opcional (si falla internet / formato raro)
+LOCAL_STATIONS_CSV = Path("./CalidadAire_Scripts/estaciones_custom.csv")
+
+HEADERS = {
+    "Accept": "text/html,application/xhtml+xml,application/json,text/csv,*/*",
+    "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+    "User-Agent": "MateoScraperBot/1.7 (+contact: your-email@example.com)"
 }
+REQ_TIMEOUT = 60
+
+TODAY = datetime.today().date()
+DEFAULT_START = TODAY - relativedelta(months=2)
+DEFAULT_END = TODAY
+
+# 14 columnas del contrato
+CONTRACT_BASE = [
+    "dataset","event_type","date","time","datetime",
+    "district_code","district_name","lat","lon","location",
+    "severity","value","units","source_id",
+]
+
+# Extras (guardamos aparte)
+AIR_FIELDS = ["pollutant","aq_value","aq_unit","station_code","station_name","__source_url"]
+
+# MAGNITUD → contaminante conocido
+MAGNITUD_MAP = {1:"so2", 6:"co", 7:"no", 8:"no2", 9:"o3", 10:"pm10", 12:"pm25"}
 OPEN_DATA_UNIT = {
-    "so2": "µg/m³",
-    "co":  "mg/m³",
-    "no":  "µg/m³",
-    "no2": "µg/m³",
-    "o3":  "µg/m³",
-    "pm10":"µg/m³",
-    "pm25":"µg/m³",
+    "so2":"µg/m³","co":"mg/m³","no":"µg/m³","no2":"µg/m³","o3":"µg/m³","pm10":"µg/m³","pm25":"µg/m³"
 }
 
-# ============== Text/Date Utils ==============
-def normalize_text(s: str) -> str:
+# Fallback embebido (puedes ampliarlo fácilmente)
+# code: (district_code, district_name, lat, lon, name)
+STATION_FALLBACK: Dict[str, Tuple[str,str,str,str,str]] = {
+    # Las tres de tu muestra
+    "011": ("01", "Centro",               "", "", "Plaza del Carmen"),
+    "016": ("15", "Ciudad Lineal",        "", "", "Arturo Soria"),
+    "017": ("08", "Fuencarral-El Pardo",  "", "", "Barrio del Pilar"),
+    # Algunas habituales (útiles si aparecen)
+    "012": ("03", "Retiro",               "", "", "Retiro"),
+    "013": ("05", "Chamartín",            "", "", "Castellana"),
+    "014": ("07", "Chamberí",             "", "", "Escuelas Aguirre"),
+    "018": ("21", "Barajas",              "", "", "Barajas"),
+    "019": ("20", "San Blas-Canillejas",  "", "", "San Blas"),
+    "020": ("10", "Latina",               "", "", "Casa de Campo"),
+    "022": ("16", "Hortaleza",            "", "", "Hortaleza"),
+}
+
+# ================================
+# Helpers
+# ================================
+
+def nfd_lower(s: str) -> str:
     s = (s or "").strip().lower()
     s = unicodedata.normalize("NFD", s)
     return "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
 
-def parse_user_date(s: str) -> Optional[date_cls]:
-    s = (s or "").strip()
-    if not s:
-        return None
-    try:
-        return dtparser.parse(s, dayfirst=False).date()
-    except Exception:
-        return None
-
-def parse_user_hour(s: str) -> Optional[Tuple[int, int]]:
-    st = (s or "").strip()
-    if not st:
-        return None
-    st = st.lower().replace(" ", "").replace(",", ".").replace("h", ":")
-    if ":" in st:
-        hh_str, mm_str = st.split(":", 1)
-        if not hh_str:
-            raise ValueError("Invalid hour")
-        hh = int(hh_str)
-        mm = int(round(float(mm_str))) if mm_str else 0
-        if mm == 60: hh, mm = hh + 1, 0
-        return hh, mm
-    if re.match(r"^\d+(\.\d+)?$", st):
-        f = float(st)
-        hh = int(f)
-        mm = int(round((f - hh) * 60))
-        if mm == 60: hh, mm = hh + 1, 0
-        return hh, mm
-    if st.isdigit():
-        return int(st), 0
-    raise ValueError("Unrecognized hour format")
+def normalize_cols(df: pd.DataFrame) -> pd.DataFrame:
+    cols = []
+    for c in df.columns:
+        name = str(c).replace("\ufeff", "")
+        base = nfd_lower(name)
+        base = re.sub(r"\s+", "_", base)
+        cols.append(base)
+    df2 = df.copy()
+    df2.columns = cols
+    return df2
 
 def fetch_html(url: str) -> str:
     r = requests.get(url, headers=HEADERS, timeout=REQ_TIMEOUT)
     r.raise_for_status()
-    if not r.encoding or r.encoding.lower() in ("ascii", "utf-8"):
+    if not r.encoding or r.encoding.lower() in ("ascii","utf-8"):
         r.encoding = r.apparent_encoding or "utf-8"
     return r.text
 
@@ -141,93 +126,50 @@ def make_soup(html: str) -> BeautifulSoup:
 
 def absolutize(base_url: str, href: str) -> str:
     from urllib.parse import urljoin
-    href = href.strip()
-    if href.startswith("//"):
-        return "https:" + href
-    if href.startswith("/"):
-        return urljoin(base_url, href)
+    href = (href or "").strip()
+    if href.startswith("//"): return "https:" + href
+    if href.startswith("/"):  return urljoin(base_url, href)
     return href
-
-def head_or_get_headers(url: str) -> Optional[requests.Response]:
-    try:
-        r = requests.head(url, headers=HEADERS, timeout=REQ_TIMEOUT, allow_redirects=True)
-        if r.status_code >= 400:
-            return None
-        ct = (r.headers.get("Content-Type") or "").lower()
-        cd = (r.headers.get("Content-Disposition") or "")
-        if ct or cd:
-            return r
-        r2 = requests.get(url, headers=HEADERS, timeout=REQ_TIMEOUT, stream=True, allow_redirects=True)
-        return r2
-    except Exception:
-        return None
-
-def content_says_data(resp: requests.Response, url: str) -> bool:
-    ct = (resp.headers.get("Content-Type") or "").lower()
-    cd = (resp.headers.get("Content-Disposition") or "")
-    ul = url.lower()
-    if "text/csv" in ct or "application/json" in ct or "application/geo+json" in ct:
-        return True
-    m = re.search(r'filename\s*=\s*"?([^";]+)"?', cd, flags=re.I)
-    if m:
-        fname = m.group(1).strip().lower()
-        if fname.endswith(".csv") or fname.endswith(".json") or fname.endswith(".geojson"):
-            return True
-    if ul.endswith(".csv") or ul.endswith(".json") or ul.endswith(".geojson"):
-        return True
-    return False
 
 def find_valid_data_url_from_page(page_url: str, soup: BeautifulSoup) -> Optional[str]:
     for key, forced in OVERRIDES.items():
         if key in page_url:
             return forced
-
     candidates = []
     for a in soup.find_all("a", href=True):
         label = " ".join(a.get_text(" ", strip=True).split())
         href = absolutize(page_url, a["href"])
-        low_href, low_label = href.lower(), label.lower()
-        if not (low_href.startswith("http://") or low_href.startswith("https://") or low_href.startswith("//")):
-            continue
-        if any(pat in low_href for pat in EXCLUDE_PATTERNS):
-            continue
-        looks_data = low_href.endswith(CSV_EXT) or low_href.endswith(JSON_EXT) or any(h in (low_href + " " + low_label) for h in PREFERRED_HINTS)
-        if not looks_data:
-            continue
-        score = 1000
-        if low_href.endswith(".csv"): score -= 300
-        elif low_href.endswith(".json") or low_href.endswith(".geojson"): score -= 250
-        if "download" in low_href or "descarg" in low_href or "descarga" in low_label: score -= 200
-        if not (low_href.endswith(".csv") or low_href.endswith(".json") or low_href.endswith(".geojson")):
-            score += 100
-        candidates.append((score, href))
+        low = (href + " " + label).lower()
+        if href.lower().endswith(".csv") or "descarg" in low or "download" in low:
+            score = 1000
+            if href.lower().endswith(".csv"): score -= 300
+            if "download" in low or "descarg" in low: score -= 200
+            candidates.append((score, href))
+    return sorted(candidates, key=lambda t: t[0])[0][1] if candidates else None
 
-    for _, u in sorted(candidates, key=lambda t: t[0]):
-        resp = head_or_get_headers(u)
-        if resp is None:
-            continue
-        final_url = str(resp.url)
-        if content_says_data(resp, final_url):
-            return final_url
-    return None
-
-def load_remote_table(url: str) -> Optional[pd.DataFrame]:
-    r = requests.get(url, headers=HEADERS, timeout=60)
+def load_table(url: str) -> Optional[pd.DataFrame]:
+    """Carga CSV/JSON con detección robusta de encoding/separador."""
+    r = requests.get(url, headers=HEADERS, timeout=REQ_TIMEOUT)
     r.raise_for_status()
     ctype = (r.headers.get("Content-Type") or "").lower()
     u = url.lower()
-    # CSV
+
     if u.endswith(".csv") or "csv" in ctype:
-        try:
-            return pd.read_csv(io.StringIO(r.text), sep=None, engine="python")
-        except Exception:
-            for sep in (";", ",", "\t", "|"):
+        data = r.content
+        for enc in ("utf-8-sig","utf-8","latin-1",None):
+            for sep in (";","\t",",","|"):
                 try:
-                    return pd.read_csv(io.StringIO(r.text), sep=sep)
+                    if enc is None:
+                        df = pd.read_csv(io.BytesIO(data), sep=sep, dtype=str, low_memory=False)
+                    else:
+                        df = pd.read_csv(io.BytesIO(data), sep=sep, dtype=str, low_memory=False, encoding=enc)
+                    if df.shape[1] == 1:  # separador erróneo
+                        continue
+                    return df
                 except Exception:
-                    pass
-            raise
-    # JSON / GeoJSON
+                    continue
+        return None
+
     if u.endswith(".json") or u.endswith(".geojson") or "json" in ctype:
         data = r.json()
         if isinstance(data, list):
@@ -235,633 +177,358 @@ def load_remote_table(url: str) -> Optional[pd.DataFrame]:
         if isinstance(data, dict) and "features" in data and isinstance(data["features"], list):
             return pd.json_normalize(data["features"])
         return pd.json_normalize(data)
+
     return None
 
-# ============== Time Window ==============
-def in_date_window(d: date_cls, target_date: Optional[date_cls], months_back: int) -> bool:
-    if target_date is None:
-        return True
-    start = target_date - relativedelta(months=months_back)
-    return start <= d <= target_date
+# ================================
+# Estaciones → distrito/coords
+# ================================
 
-# ============== Column Helpers ==============
-def find_timestamp_cols(df: pd.DataFrame) -> List[str]:
-    return [c for c in df.columns if any(k in str(c).lower() for k in
-            ["fecha_hora","fechahora","datetime","timestamp","fecha","date","hora","time"])]
-
-def find_location_columns(df: pd.DataFrame) -> List[str]:
-    keys = [
-        "calle","vía","via","direccion","dirección","ubicacion","ubicación",
-        "lugar","punto","domicilio","via_publica","carretera","tramo","cruce",
-        "street","road","address","addr","localizacion","localización",
-        "distrito","barrio","municipio","localidad","seccion","sección","zona",
-        "estacion","estación","station","punto_muestreo","site"
-    ]
-    return [c for c in df.columns if any(k in str(c).lower() for k in keys)]
-
-# ============== Hour Utils ==============
-def to_hour_minute(value) -> Optional[Tuple[int, int]]:
-    if pd.isna(value): return None
-    if isinstance(value, pd.Timestamp): return value.hour, value.minute
-    if isinstance(value, datetime): return value.hour, value.minute
-    sv = str(value).strip()
-    try:
-        f = float(sv.replace(",", "."))
-        if 0 <= f < 24 and abs(f - round(f)) > 1e-9:
-            hh = int(math.floor(f)); mm = int(round((f - hh) * 60))
-            return hh, mm
-    except Exception:
-        pass
-    s2 = sv.replace(".", ":")
-    m = re.match(r"^\s*(\d{1,2})\s*[:hH]?\s*(\d{1,2})?\s*$", s2)
-    if m:
-        return int(m.group(1)), int(m.group(2) or 0)
-    if sv.isdigit():
-        hh = int(sv)
-        if 0 <= hh < 24: return hh, 0
-    try:
-        dt = dtparser.parse(sv, dayfirst=True, fuzzy=True)
-        return dt.hour, dt.minute
-    except Exception:
-        return None
-
-# ============== Row Filter ==============
-def row_matches_filters(row: pd.Series,
-                        target_date: Optional[date_cls],
-                        hour_mm: Optional[Tuple[int,int]],
-                        location: Optional[str],
-                        df_cols: List[str],
-                        months_back: int) -> bool:
-    # Date/Time
-    if target_date or hour_mm:
-        match_time = False
-        for c in df_cols:
-            lc = str(c).lower()
-            if any(k in lc for k in ["fecha_hora","fechahora","datetime","timestamp","fecha","date","hora","time"]):
-                ts = pd.to_datetime(row[c], errors="coerce", dayfirst=True)
-                if pd.notna(ts):
-                    ok_date = in_date_window(ts.date(), target_date, months_back)
-                    if hour_mm:
-                        hh, mm = hour_mm
-                        ok_hour = (ts.hour == hh and ts.minute == mm) or (ts.hour == hh)
-                    else:
-                        ok_hour = True
-                    if ok_date and ok_hour:
-                        match_time = True
-                        break
-                else:
-                    if hour_mm:
-                        hhmm = to_hour_minute(row[c])
-                        if hhmm:
-                            hh, mm = hour_mm
-                            ok_hour = (hhmm[0] == hh and hhmm[1] == mm) or (hhmm[0] == hh)
-                            if ok_hour and target_date is None:
-                                match_time = True
-                                break
-        if not match_time:
-            return False
-
-        # Additional date check
-        if target_date:
-            for c in df_cols:
-                if "fecha" in str(c).lower() or "date" in str(c).lower():
-                    ts = pd.to_datetime(row[c], errors="coerce", dayfirst=True)
-                    if pd.notna(ts):
-                        if not in_date_window(ts.date(), target_date, months_back):
-                            return False
-                        break
-
-    # Location
-    if location:
-        target = normalize_text(location)
-        loc_cols = find_location_columns(pd.DataFrame(columns=df_cols))
-        if loc_cols:
-            found_loc = False
-            for c in loc_cols:
-                try:
-                    val = normalize_text(str(row.get(c, "")))
-                    if target and target in val:
-                        found_loc = True
-                        break
-                except Exception:
-                    pass
-            if not found_loc:
-                return False
-
-    return True
-
-# ============== AQI Category ==============
-def category_from_aqi(aqi: Optional[str]) -> Optional[str]:
-    if aqi is None:
-        return None
-    try:
-        v = int(aqi)
-    except Exception:
-        return None
-    if   0 <= v <= 50:   return "Buena"
-    if  51 <= v <= 100:  return "Moderada"
-    if 101 <= v <= 150:  return "Perjudicial para grupos sensibles"
-    if 151 <= v <= 200:  return "Mala"
-    if 201 <= v <= 300:  return "Muy mala"
-    if 301 <= v <= 500:  return "Peligrosa"
-    return None
-
-# ============== Selenium Helpers ==============
-def _map_by_key(by_key: str):
-    """Map a simple string to Selenium's By.* constant."""
-    if not SELENIUM_AVAILABLE:
-        return None
-    by_key = (by_key or "").strip().lower()
-    mapping = {
-        "id": By.ID,
-        "name": By.NAME,
-        "xpath": By.XPATH,
-        "css_selector": By.CSS_SELECTOR,
-        "css": By.CSS_SELECTOR,
-        "class_name": By.CLASS_NAME,
-        "link_text": By.LINK_TEXT,
-        "partial_link_text": By.PARTIAL_LINK_TEXT,
-        "tag_name": By.TAG_NAME,
-    }
-    return mapping.get(by_key)
-
-def fetch_air_quality_index_selenium(url: str, selector: dict) -> Optional[str]:
+def build_station_lookup() -> Dict[str, Dict[str,str]]:
     """
-    Minimal Selenium fetch to get dynamic AQI when static HTML parsing fails.
-    selector example: {"by": "class_name", "value": "aq-number"}
+    Devuelve { '011': {'district_code':'01','district_name':'Centro','lat':'..','lon':'..','name':'..'}, ... }
+    Prioridad: catálogo online → CSV local 'estaciones_custom.csv' → fallback embebido.
     """
-    if not SELENIUM_AVAILABLE:
-        return None
+    # 1) Intento catálogo online
+    for url in STATIONS_CATALOG_CANDIDATES:
+        try:
+            df = load_table(url)
+            if df is None or df.empty:
+                print(f"[Lookup] Vacío/no válido: {url}")
+                continue
+            df = normalize_cols(df)
+            print(f"[Lookup] Cargado: {url} - cols: {list(df.columns)[:10]}...")
 
-    chrome_options = Options()
-    # Uncomment headless if you prefer no browser UI:
-    # chrome_options.add_argument("--headless=new")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--no-sandbox")
-    # chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+            stc = next((c for c in ["codigo_estacion","cod_estacion","estacion","estación","codigo","code","id_estacion"] if c in df.columns), None)
+            name = next((c for c in ["nombre","nombre_estacion","estacion_nombre","estación_nombre","station_name"] if c in df.columns), None)
+            dist_name = next((c for c in ["distrito","nombre_distrito","district","district_name"] if c in df.columns), None)
+            dist_code = next((c for c in ["cod_distrito","codigo_distrito","district_code","codigo__distrito"] if c in df.columns), None)
+            latc = next((c for c in ["lat","latitud","latitude","y"] if c in df.columns), None)
+            lonc = next((c for c in ["lon","longitud","longitude","x"] if c in df.columns), None)
 
-    driver = webdriver.Chrome(service=Service(CHROMEDRIVER_PATH), options=chrome_options)
-    try:
-        driver.get(url)
-        by = _map_by_key(selector.get("by", "class_name"))
-        value = selector.get("value", "aq-number")
-        if by is None:
-            return None
-        aqi_element = WebDriverWait(driver, 40).until(
-            EC.visibility_of_element_located((by, value))
-        )
-        txt = (aqi_element.text or "").strip()
-        return txt if txt else None
-    except Exception as e:
-        print(f"[Selenium] Error fetching AQI: {e}")
-        traceback.print_exc()
-        return None
-    finally:
-        driver.quit()
+            if stc is None:
+                print(f"[Lookup] No encuentro columna de código estación en {url}")
+                continue
 
-# ============== AccuWeather Parsing ==============
-def parse_accuweather_aqi(html: str) -> Dict[str, Optional[str]]:
-    """
-    Extract AQI and pollutants (value + unit) from AccuWeather page text.
-    """
-    soup = make_soup(html)
-    text = soup.get_text("\n", strip=True)
+            lookup: Dict[str, Dict[str,str]] = {}
+            for _, row in df.iterrows():
+                m = re.search(r"(\d{1,3})", str(row.get(stc, "")))
+                if not m:
+                    continue
+                sid = m.group(1).zfill(3)
 
-    # Numeric AQI
-    aqi = None
-    m_aqi = re.search(r"\b(\d{1,3})\s*AQI\b", text, flags=re.I)
-    if m_aqi:
-        aqi = m_aqi.group(1)
-    aqi_cat = category_from_aqi(aqi)
+                dcode = str(row.get(dist_code, "") or "").strip()
+                if dcode != "":
+                    dcode = re.sub(r"\D", "", dcode).zfill(2)
 
-    pol_keys = {
-        "PM 2.5": "pm25", "PM 2,5": "pm25", "PM2.5": "pm25",
-        "PM 10": "pm10",  "PM10": "pm10",
-        "O3": "o3", "O 3": "o3",
-        "NO2": "no2", "NO 2": "no2",
-        "SO2": "so2", "SO 2": "so2",
-        "CO": "co",
-    }
-
-    out = {
-        "pm25_ugm3": None, "pm10_ugm3": None, "o3_ugm3": None,
-        "no2_ugm3": None, "so2_ugm3": None, "co_ugm3": None,
-        "pm25_raw": None, "pm25_unit": None,
-        "pm10_raw": None, "pm10_unit": None,
-        "o3_raw": None,  "o3_unit": None,
-        "no2_raw": None, "no2_unit": None,
-        "so2_raw": None, "so2_unit": None,
-        "co_raw": None,  "co_unit": None,
-    }
-
-    # Capture "value + unit" near pollutant name
-    for key, short in pol_keys.items():
-        patt = rf"{re.escape(key)}(.{{0,300}}?)(\d+(?:[.,]\d+)?)\s*(µg/m³|ug/m3|ppm)"
-        matches = list(re.finditer(patt, text, flags=re.I | re.S))
-        if not matches:
+                lookup[sid] = {
+                    "district_code": dcode,
+                    "district_name": str(row.get(dist_name, "") or "").strip(),
+                    "lat": str(row.get(latc, "") or "").strip(),
+                    "lon": str(row.get(lonc, "") or "").strip(),
+                    "name": str(row.get(name, "") or "").strip(),
+                }
+            if lookup:
+                print(f"[Lookup] Catálogo estaciones OK: {url} ({len(lookup)} estaciones)")
+                return lookup
+        except Exception as e:
+            print(f"[Lookup] Error con {url}: {e}")
             continue
-        val = matches[-1].group(2).replace(",", ".")
-        unit = matches[-1].group(3).lower().replace("ug/m3", "µg/m³")
-        out[f"{short}_raw"] = val
-        out[f"{short}_unit"] = unit
-        if unit == "µg/m³":
-            out[f"{short}_ugm3"] = val
 
-    return {"aqi": aqi, "aqi_category": aqi_cat, **out}
+    # 2) Intento CSV local opcional
+    if LOCAL_STATIONS_CSV.exists():
+        try:
+            df = pd.read_csv(LOCAL_STATIONS_CSV, dtype=str)
+            df = normalize_cols(df)
+            req = {"station_code","district_code","district_name","lat","lon","name"}
+            if not req.issubset(df.columns):
+                print(f"[Lookup] CSV local sin columnas requeridas: {LOCAL_STATIONS_CSV}")
+            else:
+                lookup = {}
+                for _, row in df.iterrows():
+                    sid = re.sub(r"\D","", str(row["station_code"])).zfill(3)
+                    dcode = re.sub(r"\D","", str(row["district_code"])).zfill(2)
+                    lookup[sid] = {
+                        "district_code": dcode,
+                        "district_name": str(row["district_name"]),
+                        "lat": str(row["lat"]),
+                        "lon": str(row["lon"]),
+                        "name": str(row["name"]),
+                    }
+                if lookup:
+                    print(f"[Lookup] Usando CSV local: {LOCAL_STATIONS_CSV} ({len(lookup)} estaciones)")
+                    return lookup
+        except Exception as e:
+            print(f"[Lookup] Error leyendo CSV local: {e}")
 
-def scrape_accuweather_row() -> pd.DataFrame:
+    # 3) Fallback embebido
+    if STATION_FALLBACK:
+        print("[Lookup] Usando fallback estático de estaciones.")
+        return {k: {"district_code":v[0],"district_name":v[1],"lat":v[2],"lon":v[3],"name":v[4]}
+                for k,v in STATION_FALLBACK.items()}
+
+    print("[Lookup] *Sin* catálogo ni fallback — distritos quedarán 'NA'.")
+    return {}
+
+def extract_station_code(punto_muestreo: str) -> Optional[str]:
     """
-    Try static HTML parse first. If no data is found and Selenium fallback is enabled
-    and available, try to fetch at least the AQI using Selenium.
+    PUNTO_MUESTREO típico: '28079NNN_XX_Y' → sacamos NNN (3 dígitos).
     """
-    parsed = {}
-    try:
-        html = fetch_html(ACCUWEATHER_AQI)
-        parsed = parse_accuweather_aqi(html)
-    except Exception:
-        parsed = {}
+    if not punto_muestreo:
+        return None
+    m = re.search(r"28079(\d{3})", str(punto_muestreo))
+    return m.group(1) if m else None
 
-    # If static parse yielded nothing, try Selenium AQI fallback
-    if not any(parsed.values()) and USE_SELENIUM_FALLBACK and SELENIUM_AVAILABLE:
-        aqi_val = fetch_air_quality_index_selenium(
-            ACCUWEATHER_AQI,
-            {"by": "class_name", "value": "aq-number"}  # Known AQI class in AccuWeather
-        )
-        if aqi_val:
-            parsed = {"aqi": aqi_val, "aqi_category": category_from_aqi(aqi_val)}
+# ================================
+# Limpieza y expansión diaria
+# ================================
 
-    # If still nothing, return empty
-    if not parsed or not any(parsed.values()):
+def clean_value_str(s):
+    if s is None:
+        return None
+    s = str(s).strip().strip('"').strip("'")
+    if s == "" or s.upper() == "NA" or s == "-":
+        return None
+    m = re.search(r"-?\d+(?:[.,]\d+)?", s)
+    if not m:
+        return None
+    return m.group(0).replace(",", ".")
+
+def expand_month_to_daily(df: pd.DataFrame) -> pd.DataFrame:
+    """Usa D01..D31 como valor; V01..V31 (validación) no es obligatoria."""
+    if df.empty:
+        return df
+
+    df = normalize_cols(df)
+
+    ycol = next((c for c in ["ano","año","anio","year"] if c in df.columns), None)
+    mcol = next((c for c in ["mes","month"] if c in df.columns), None)
+    mag  = next((c for c in ["magnitud","cod_magnitud","codigo_magnitud"] if c in df.columns), None)
+    pm   = next((c for c in ["punto_muestreo","punto_de_muestreo"] if c in df.columns), None)
+    st_name = next((c for c in ["nombre","estacion_nombre","estación_nombre","station_name"] if c in df.columns), None)
+
+    if ycol is None or mcol is None:
         return pd.DataFrame()
 
-    now = datetime.now()
-    row = {
-        "__fuente": ACCUWEATHER_AQI,
-        "fecha": now.strftime("%Y-%m-%d"),
-        "hora": now.strftime("%H:%M"),
-        "origen": "AccuWeather",
-        **{
-            # Ensure all pollutant fields exist in the output schema
-            "aqi": parsed.get("aqi"),
-            "aqi_category": parsed.get("aqi_category"),
-            "pm25_ugm3": parsed.get("pm25_ugm3"),
-            "pm10_ugm3": parsed.get("pm10_ugm3"),
-            "o3_ugm3": parsed.get("o3_ugm3"),
-            "no2_ugm3": parsed.get("no2_ugm3"),
-            "so2_ugm3": parsed.get("so2_ugm3"),
-            "co_ugm3": parsed.get("co_ugm3"),
-            "pm25_raw": parsed.get("pm25_raw"),
-            "pm25_unit": parsed.get("pm25_unit"),
-            "pm10_raw": parsed.get("pm10_raw"),
-            "pm10_unit": parsed.get("pm10_unit"),
-            "o3_raw": parsed.get("o3_raw"),
-            "o3_unit": parsed.get("o3_unit"),
-            "no2_raw": parsed.get("no2_raw"),
-            "no2_unit": parsed.get("no2_unit"),
-            "so2_raw": parsed.get("so2_raw"),
-            "so2_unit": parsed.get("so2_unit"),
-            "co_raw": parsed.get("co_raw"),
-            "co_unit": parsed.get("co_unit"),
-        }
-    }
-    return pd.DataFrame([row])
+    dcols = [f"d{d:02d}" for d in range(1, 32) if f"d{d:02d}" in df.columns]
+    if not dcols:
+        return pd.DataFrame()
 
-# ============== Open Data Processing ==============
-def process_page_filtered_full(page_url: str,
-                               target_date: Optional[date_cls],
-                               hour_mm: Optional[Tuple[int,int]],
-                               location: Optional[str],
-                               months_back: int) -> pd.DataFrame:
+    blocks = []
+    base_cols = [c for c in [ycol, mcol, mag, pm, st_name] if c is not None]
+    y = pd.to_numeric(df[ycol], errors="coerce")
+    m = pd.to_numeric(df[mcol], errors="coerce")
+
+    for d in range(1, 32):
+        dcol = f"d{d:02d}"
+        if dcol not in df.columns:
+            continue
+        val_series = df[dcol].map(clean_value_str)
+        tmp = df[base_cols].copy()
+        tmp["year__"] = y
+        tmp["month__"] = m
+        tmp["day__"] = d
+        tmp["value_txt__"] = val_series
+        blocks.append(tmp)
+
+    if not blocks:
+        return pd.DataFrame()
+
+    long_df = pd.concat(blocks, ignore_index=True)
+    long_df = long_df[long_df["value_txt__"].notna()]
+    long_df["fecha"] = pd.to_datetime(dict(
+        year=long_df["year__"].astype("Int64"),
+        month=long_df["month__"].astype("Int64"),
+        day=long_df["day__"].astype("Int64")
+    ), errors="coerce").dt.date
+    long_df = long_df[pd.notna(long_df["fecha"])]
+
+    long_df["aq_value"] = pd.to_numeric(long_df["value_txt__"], errors="coerce")
+    long_df = long_df[long_df["aq_value"].notna()]
+
+    out = pd.DataFrame()
+    out["fecha"] = long_df["fecha"]
+
+    # pollutant + unit (fallbacks)
+    def _map_pol_and_unit(v):
+        try:
+            code = int(float(str(v).replace(",", ".")))
+        except Exception:
+            return ("mag_unknown", "NA")
+        pol = MAGNITUD_MAP.get(code, f"mag_{code}")
+        unit = OPEN_DATA_UNIT.get(pol, "NA")
+        return (pol, unit)
+
+    pol_unit = long_df[mag].map(_map_pol_and_unit) if mag in long_df.columns else [("mag_unknown","NA")] * len(long_df)
+    out["pollutant"] = [t[0] for t in pol_unit]
+    out["aq_unit"]   = [t[1] for t in pol_unit]
+
+    # Station fields
+    out["station_code"] = long_df[pm].map(extract_station_code) if pm in long_df.columns else None
+    out["station_name"] = long_df[st_name].astype(str) if st_name in long_df.columns else ""
+
+    out["aq_value"] = long_df["aq_value"].astype(float)
+    return out.reset_index(drop=True)
+
+# ================================
+# Pipeline
+# ================================
+
+def process_one(page_url: str) -> pd.DataFrame:
+    print(f"\n[Ficha] {page_url}")
     try:
         html = fetch_html(page_url)
-    except Exception:
+    except Exception as e:
+        print(f"  [Error al abrir ficha] {e}")
         return pd.DataFrame()
     soup = make_soup(html)
 
     data_url = None
     for key, forced in OVERRIDES.items():
         if key in page_url:
-            data_url = forced
-            break
+            data_url = forced; break
     if not data_url:
         data_url = find_valid_data_url_from_page(page_url, soup)
     if not data_url:
+        print("  [Aviso] No se encontró URL de datos.")
         return pd.DataFrame()
 
-    df = load_remote_table(data_url)
-    if df is None or df.empty:
+    print(f"  [Descarga] {data_url}")
+    df_raw = load_table(data_url)
+    if df_raw is None or df_raw.empty:
+        print("  [Aviso] Descarga vacía o no válida.")
         return pd.DataFrame()
 
-    df2 = df.copy()
-    df2["__fuente"] = data_url
-    df2["origen"] = "DatosAbiertosMadrid"
-
-    # Date detection
-    fecha_col = None
-    for c in df2.columns:
-        if any(k in str(c).lower() for k in ["fecha_hora","fechahora","datetime","timestamp","fecha","date"]):
-            fecha_col = c
-            break
-
-    if fecha_col is not None:
-        df2["__fecha_dt"] = pd.to_datetime(df2[fecha_col], errors="coerce", dayfirst=True).dt.date
-    else:
-        cols_low = {str(c).lower(): c for c in df2.columns}
-        ycol = cols_low.get("ano") or cols_low.get("año") or cols_low.get("anio") or cols_low.get("year")
-        mcol = cols_low.get("mes") or cols_low.get("month")
-        dcol = cols_low.get("dia") or cols_low.get("día") or cols_low.get("day")
-        if ycol and mcol and dcol:
-            try:
-                df2["__fecha_dt"] = pd.to_datetime(
-                    df2[[ycol, mcol, dcol]].rename(columns={ycol: "Y", mcol: "M", dcol: "D"}),
-                    errors="coerce"
-                ).dt.date
-            except Exception:
-                df2["__fecha_dt"] = pd.NaT
-        else:
-            df2["__fecha_dt"] = pd.NaT
-
-    if target_date:
-        mask = df2["__fecha_dt"].apply(lambda x: pd.notna(x) and in_date_window(x, target_date, months_back))
-        df2 = df2[mask]
-
-    if location:
-        loc_cols = find_location_columns(df2)
-        if loc_cols:
-            target = normalize_text(location)
-            m2 = False
-            for c in loc_cols:
-                normcol = df2[c].astype(str).map(normalize_text)
-                m2 = m2 | normcol.str.contains(target, na=False)
-            df2 = df2[m2]
-
-    return df2.reset_index(drop=True)
-
-# ============== City Daily Aggregation ==============
-def normalize_pollutant_from_row(row: pd.Series) -> Optional[str]:
-    for key in ["MAGNITUD", "magnitud", "cod_magnitud", "codigo_magnitud"]:
-        if key in row.index:
-            try:
-                code = int(row[key])
-                return MAGNITUD_MAP.get(code)
-            except Exception:
-                pass
-    txt = " ".join([str(row.get(c, "")) for c in row.index]).lower()
-    mapping = {
-        "pm2.5": "pm25", "pm 2.5": "pm25", "pm 2,5": "pm25", "pm25": "pm25",
-        "pm10": "pm10", "pm 10": "pm10",
-        "ozono": "o3", "o3": "o3",
-        "no2": "no2", "dióxido de nitrógeno": "no2", "dioxido de nitrogeno": "no2",
-        "so2": "so2", "dióxido de azufre": "so2", "dioxido de azufre": "so2",
-        "co": "co", "monoxido de carbono": "co", "monóxido de carbono": "co",
-    }
-    for k, v in mapping.items():
-        if k in txt:
-            return v
-    return None
-
-def extract_value_from_row(row: pd.Series) -> Optional[float]:
-    for key in ["VALOR","valor","concentracion","concentración","value","median","media"]:
-        if key in row.index:
-            try:
-                return float(str(row[key]).replace(",", "."))
-            except Exception:
-                pass
-
-    hours = []
-    for h in range(1, 25):
-        for cand in (f"H{h:02d}", f"h{h:02d}", f"hora_{h:02d}", f"hora{h:02d}", f"V{h:02d}"):
-            if cand in row.index:
-                try:
-                    hours.append(float(str(row[cand]).replace(",", ".")))
-                except Exception:
-                    pass
-                break
-    if hours:
-        vals = [v for v in hours if isinstance(v, (int, float)) and not pd.isna(v)]
-        if vals:
-            return float(sum(vals) / len(vals))
-
-    return None
-
-def build_city_daily_agg(df_open: pd.DataFrame) -> pd.DataFrame:
-    if df_open is None or df_open.empty or "__fecha_dt" not in df_open.columns:
-        return pd.DataFrame(columns=["fecha","pollutant","open_value","open_unit"])
-
-    rows = []
-    for _, row in df_open.iterrows():
-        pol = normalize_pollutant_from_row(row)
-        if not pol:
-            continue
-        val = extract_value_from_row(row)
-        if val is None:
-            continue
-        fecha = row["__fecha_dt"]
-        rows.append({
-            "fecha": fecha,
-            "pollutant": pol,
-            "value": val
-        })
-
-    if not rows:
-        return pd.DataFrame(columns=["fecha","pollutant","open_value","open_unit"])
-
-    tmp = pd.DataFrame(rows)
-    agg = tmp.groupby(["fecha","pollutant"], as_index=False)["value"].mean().rename(columns={"value":"open_value"})
-    agg["open_unit"] = agg["pollutant"].map(OPEN_DATA_UNIT).fillna("NA")
-    return agg
-
-# ============== Accu → Long Format ==============
-def accuweather_to_long(df_acc: pd.DataFrame) -> pd.DataFrame:
-    if df_acc is None or df_acc.empty:
-        return pd.DataFrame(columns=["fecha","pollutant","acc_value_ugm3","acc_raw","acc_unit","aqi","aqi_category"])
-    row = df_acc.iloc[0].to_dict()
-    fecha = row.get("fecha")
-    out = []
-    for pol in ["pm25","pm10","o3","no2","so2","co"]:
-        ug = row.get(f"{pol}_ugm3")
-        raw = row.get(f"{pol}_raw")
-        unit = row.get(f"{pol}_unit")
-        out.append({
-            "fecha": pd.to_datetime(fecha, errors="coerce").date() if fecha else None,
-            "pollutant": pol,
-            "acc_value_ugm3": float(ug) if ug not in (None, "NA") else None,
-            "acc_raw": raw if raw not in (None, "NA") else None,
-            "acc_unit": unit if unit not in (None, "NA") else None,
-            "aqi": row.get("aqi"),
-            "aqi_category": row.get("aqi_category"),
-        })
-    return pd.DataFrame(out)
-
-# ============== Compare Sources ==============
-def compare_sources(df_acc_long: pd.DataFrame, df_open_agg: pd.DataFrame,
-                    target_date: Optional[date_cls], months_back: int) -> pd.DataFrame:
-    required_cols = ["fecha", "pollutant", "open_value", "open_unit"]
-    if df_open_agg is None or not isinstance(df_open_agg, pd.DataFrame) or df_open_agg.empty:
-        df_open_agg = pd.DataFrame(columns=required_cols)
-    else:
-        for c in required_cols:
-            if c not in df_open_agg.columns:
-                df_open_agg[c] = pd.NA
-        df_open_agg["fecha"] = pd.to_datetime(df_open_agg["fecha"], errors="coerce").dt.date
-
-    acc_cols = ["fecha","pollutant","acc_value_ugm3","acc_raw","acc_unit","aqi","aqi_category"]
-    if df_acc_long is None or not isinstance(df_acc_long, pd.DataFrame) or df_acc_long.empty:
-        df_acc_long = pd.DataFrame(columns=acc_cols)
-    else:
-        for c in acc_cols:
-            if c not in df_acc_long.columns:
-                df_acc_long[c] = pd.NA
-        df_acc_long["fecha"] = pd.to_datetime(df_acc_long["fecha"], errors="coerce").dt.date
-
-    if target_date and not df_open_agg.empty:
-        mask = df_open_agg["fecha"].apply(lambda d: pd.notna(d) and in_date_window(d, target_date, months_back))
-        df_open_agg = df_open_agg[mask].copy()
-
-    merged = df_open_agg.merge(
-        df_acc_long,
-        on=["fecha","pollutant"],
-        how="left",
-        suffixes=("_open","_acc")
-    )
-
-    def delta_row(r):
-        try:
-            v_open = float(r["open_value"]) if r["open_value"] not in (None, "NA", "") else None
-            v_acc  = float(r["acc_value_ugm3"]) if r["acc_value_ugm3"] not in (None, "NA", "") else None
-            if r.get("open_unit") == "µg/m³" and v_open is not None and v_acc is not None:
-                return v_acc - v_open
-            return None
-        except Exception:
-            return None
-
-        # If open data is empty but we have AccuWeather, return AccuWeather rows
-    if merged.empty and not df_acc_long.empty:
-        acc_only = df_acc_long.copy()
-        acc_only["open_value"] = pd.NA
-        acc_only["open_unit"] = pd.NA
-        acc_only["delta_ugm3_acc_minus_open"] = pd.NA
-        # Orden final consistente
-        cols = ["fecha","pollutant","open_value","open_unit",
-                "acc_value_ugm3","acc_raw","acc_unit",
-                "aqi","aqi_category","delta_ugm3_acc_minus_open"]
-        for c in cols:
-            if c not in acc_only.columns:
-                acc_only[c] = pd.NA
-        return acc_only[cols]
-
-    return merged
-
-
-# ============== Main ==============
-def main():
-    print("=== COMPARADOR CLIMA / CALIDAD DEL AIRE (Madrid) ===")
-    user_date = input("Fecha (YYYY-MM-DD) o Enter para omitir: ").strip()
-    target_date = parse_user_date(user_date)
-    if user_date and target_date is None:
-        print("Fecha inválida. Usa YYYY-MM-DD.")
-        sys.exit(1)
-
-    months_back = MONTHS_BACK_DEFAULT
-    user_months = input(f"Meses hacia atrás (Enter={MONTHS_BACK_DEFAULT}): ").strip()
-    if user_months:
-        try:
-            months_back = max(0, int(user_months))
-        except Exception:
-            print("Valor de meses inválido. Usando valor por defecto:", MONTHS_BACK_DEFAULT)
-            months_back = MONTHS_BACK_DEFAULT
-
-    location = input("Estación / Ubicación (opcional) o Enter para omitir: ").strip() or None
-
-    user_hour = input("Hora (ej: 08, 08:30, 8.5, 8,25) o Enter para omitir: ").strip()
     try:
-        hour_mm = parse_user_hour(user_hour) if user_hour else None
-        if hour_mm:
-            hh, mm = hour_mm
-            assert 0 <= hh < 24 and 0 <= mm < 60
-    except Exception:
-        print("Hora inválida. Usa 08, 08:30, 8.5, 8,25 …")
-        sys.exit(1)
-
-    # 1) AccuWeather (current snapshot) with Selenium fallback
-    acc_df = scrape_accuweather_row()
-
-    # 2) Open Data (filtered)
-    parts = []
-    for url in PAGES:
-        try:
-            dfp = process_page_filtered_full(url, target_date, hour_mm, location, months_back)
-            if not dfp.empty:
-                parts.append(dfp)
-        except Exception as e:
-            print(f"[Aviso] Error procesando {url}: {e}")
-
-    open_df = pd.concat(parts, ignore_index=True, sort=False) if parts else pd.DataFrame()
-
-    # ---- Log consolidated ----
-    log_parts = []
-    if not acc_df.empty:
-        log_parts.append(acc_df.copy())
-    if not open_df.empty:
-        if "__fecha_dt" in open_df.columns and "fecha" not in open_df.columns:
-            tmp = open_df.copy()
-            tmp["fecha"] = tmp["__fecha_dt"].astype(str)
-        else:
-            tmp = open_df.copy()
-        log_parts.append(tmp)
-
-    if log_parts:
-        out_log = pd.concat(log_parts, ignore_index=True, sort=False)
-        out_log = out_log.fillna("NA")
-        for c in out_log.columns:
-            try:
-                out_log[c] = out_log[c].astype(str).replace(r"^\s*$", "NA", regex=True)
-            except Exception:
-                pass
-        out_log.to_csv(OUT_FILE_LOG, index=False, encoding="utf-8-sig", sep=";")
-        print(f"[OK] Log guardado: {OUT_FILE_LOG.resolve()}")
-    else:
-        pd.DataFrame(columns=["__fuente"]).to_csv(OUT_FILE_LOG, index=False, encoding="utf-8-sig", sep=";")
-        print(f"[OK] Log vacío (sin datos): {OUT_FILE_LOG.resolve()}")
-
-    # ---- Comparison (date/pollutant) ----
-    open_agg = build_city_daily_agg(open_df) if not open_df.empty else pd.DataFrame(
-        columns=["fecha","pollutant","open_value","open_unit"]
-    )
-    acc_long = accuweather_to_long(acc_df) if not acc_df.empty else pd.DataFrame(
-        columns=["fecha","pollutant","acc_value_ugm3","acc_raw","acc_unit","aqi","aqi_category"]
-    )
-    comp_df = compare_sources(acc_long, open_agg, target_date, months_back)
-
-    prefer_cols = [
-        "fecha","pollutant",
-        "open_value","open_unit",
-        "acc_value_ugm3","acc_raw","acc_unit",
-        "aqi","aqi_category",
-        "delta_ugm3_acc_minus_open"
-    ]
-    if not comp_df.empty:
-        cols = [c for c in prefer_cols if c in comp_df.columns] + [c for c in comp_df.columns if c not in prefer_cols]
-        comp_df = comp_df[cols]
-    else:
-        comp_df = pd.DataFrame(columns=prefer_cols)
-
-    comp_df_out = comp_df.copy()
-    comp_df_out = comp_df_out.fillna("NA")
-    for c in comp_df_out.columns:
-        try:
-            comp_df_out[c] = comp_df_out[c].astype(str).replace(r"^\s*$", "NA", regex=True)
-        except Exception:
-            pass
-
-    comp_df_out.to_csv(OUT_FILE_COMPARE, index=False, encoding="utf-8-sig", sep=";")
-    print(f"[OK] Comparación guardada: {OUT_FILE_COMPARE.resolve()}")
-
-    try:
-        print("\n=== PREVIEW COMPARACIÓN ===")
-        print(comp_df.head(12))
+        df_raw.head(200).to_csv(
+            DEBUG_HEAD, index=False, sep=";", encoding="utf-8-sig",
+            quoting=csv.QUOTE_NONE, escapechar="\\", lineterminator="\n"
+        )
+        print(f"  [Debug] Primeras 200 filas → {DEBUG_HEAD.resolve()}")
     except Exception:
         pass
+
+    daily = expand_month_to_daily(df_raw)
+    print(f"  [Expandido] {daily.shape} filas diarias")
+    daily["__source_url"] = data_url
+    return daily.reset_index(drop=True)
+
+def filter_window_daily(daily: pd.DataFrame, start_date: date_cls, end_date: date_cls) -> pd.DataFrame:
+    if daily.empty or "fecha" not in daily.columns:
+        return daily.iloc[0:0]
+    mask = daily["fecha"].between(start_date, end_date)
+    return daily[mask].copy()
+
+def build_contract(df_daily: pd.DataFrame, station_lookup: Dict[str, Dict[str,str]]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    if df_daily.empty:
+        return (pd.DataFrame(columns=CONTRACT_BASE),
+                pd.DataFrame(columns=AIR_FIELDS))
+
+    # Enriquecer con distrito/coords usando station_code
+    def enrich(row):
+        sid = (row.get("station_code") or "").strip()
+        meta = station_lookup.get(sid, {})
+        return pd.Series({
+            "district_code": meta.get("district_code",""),
+            "district_name": meta.get("district_name",""),
+            "lat": meta.get("lat",""),
+            "lon": meta.get("lon",""),
+            "location": meta.get("name","") or row.get("station_name","")
+        })
+
+    enrich_df = df_daily.apply(enrich, axis=1)
+
+    out = pd.DataFrame()
+    out["dataset"] = "calidad_aire"
+    out["event_type"] = df_daily.get("pollutant", "medicion").fillna("medicion")
+    out["date"] = pd.to_datetime(df_daily["fecha"], errors="coerce").dt.strftime("%Y-%m-%d")
+    out["time"] = ""
+    out["datetime"] = ""
+    out["district_code"] = enrich_df["district_code"]
+    out["district_name"] = enrich_df["district_name"]
+    out["lat"] = enrich_df["lat"]
+    out["lon"] = enrich_df["lon"]
+    out["location"] = enrich_df["location"].where(enrich_df["location"].str.len() > 0, df_daily.get("station_name",""))
+    out["severity"] = ""
+    out["value"] = pd.to_numeric(df_daily.get("aq_value", pd.Series(dtype=float)), errors="coerce")
+    out["units"] = df_daily.get("aq_unit", "NA")
+    out["source_id"] = df_daily.get("__source_url", "")
+
+    # Garantiza contrato y relleno NA
+    for col in CONTRACT_BASE:
+        if col not in out.columns:
+            out[col] = ""
+    out = out[CONTRACT_BASE]
+    out = out.fillna("NA").replace(r"^\s*$", "NA", regex=True)
+
+    # Extras
+    extras = pd.DataFrame()
+    for c in AIR_FIELDS:
+        extras[c] = df_daily.get(c, "NA")
+    extras = extras.fillna("NA").replace(r"^\s*$", "NA", regex=True)
+    return out, extras
+
+def main():
+    start_date = DEFAULT_START
+    end_date = DEFAULT_END
+    print(f"[Ventana] {start_date.isoformat()} -> {end_date.isoformat()}")
+
+    # 1) Catálogo de estaciones → lookup
+    station_lookup = build_station_lookup()
+    if not station_lookup:
+        print("[Aviso] No se pudo cargar catálogo de estaciones ni fallback útil. Distritos 'NA'.")
+
+    # 2) Carga y filtro ventana
+    parts = []
+    for url in PAGES:
+        daily_all = process_one(url)
+        daily_win = filter_window_daily(daily_all, start_date, end_date)
+        print(f"  [Filtrado 2m] {daily_win.shape} filas")
+        if not daily_win.empty:
+            parts.append(daily_win)
+
+    if not parts:
+        print("\n[Resultado] Sin filas en la ventana.")
+        pd.DataFrame(columns=CONTRACT_BASE).to_csv(
+            OUT_FILE, index=False, sep=";", encoding="utf-8-sig",
+            quoting=csv.QUOTE_NONE, escapechar="\\", lineterminator="\n"
+        )
+        print(f"[OK] Datasheet vacío: {OUT_FILE.resolve()}")
+        return
+
+    daily = pd.concat(parts, ignore_index=True, sort=False)
+
+    # 3) Construir contrato + extras
+    datasheet, extras = build_contract(daily, station_lookup)
+
+    # 4) Guardado
+    datasheet.to_csv(
+        OUT_FILE, index=False, sep=";", encoding="utf-8-sig",
+        quoting=csv.QUOTE_NONE, escapechar="\\", lineterminator="\n"
+    )
+    if not extras.empty:
+        extras.to_csv(
+            EXTRAS_FILE, index=False, sep=";", encoding="utf-8-sig",
+            quoting=csv.QUOTE_NONE, escapechar="\\", lineterminator="\n"
+        )
+
+    # Diagnóstico: estaciones sin distrito
+    if "district_code" in datasheet.columns:
+        missing = datasheet["district_code"].isin(["NA",""])
+        if missing.any():
+            problematic = (daily.loc[missing, ["station_code","station_name"]]
+                           .drop_duplicates()
+                           .sort_values(by="station_code"))
+            print("\n[Diag] Estaciones sin mapeo de distrito (añade al fallback o CSV local):")
+            try:
+                print(problematic.to_string(index=False))
+            except Exception:
+                print(problematic.head(20))
+
+    print(f"\n[OK] Datasheet escrito: {OUT_FILE.resolve()}")
+    if not extras.empty:
+        print(f"[OK] Extras escritos: {EXTRAS_FILE.resolve()}")
+    print(f"[Filas] {len(datasheet)}")
 
 if __name__ == "__main__":
     main()

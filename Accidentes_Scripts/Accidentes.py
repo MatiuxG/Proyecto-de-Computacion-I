@@ -1,8 +1,9 @@
-
 import re
 import io
 import sys
 import math
+import csv
+import json
 import unicodedata
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
@@ -15,25 +16,34 @@ from dateutil import parser as dtparser
 from dateutil.relativedelta import relativedelta
 import xml.etree.ElementTree as ET
 
-# --- Config fuentes ---
+# ================================
+# Configuración
+# ================================
+
+# Páginas de catálogo a escanear (puedes ampliar esta lista si lo necesitas)
 DATASET_PAGES = [
     "https://datos.madrid.es/portal/site/egob/menuitem.c05c1f754a33a9fbe4b2e4b284f1a5a0/?vgnextoid=7c2843010d9c3610VgnVCM2000001f4a900aRCRD&vgnextchannel=374512b9ace9f310VgnVCM100000171f5a0aRCRD&vgnextfmt=default",
     "https://datos.madrid.es/portal/site/egob/menuitem.c05c1f754a33a9fbe4b2e4b284f1a5a0/?vgnextoid=40085fb0e70b7410VgnVCM2000000c205a0aRCRD&vgnextchannel=374512b9ace9f310VgnVCM100000171f5a0aRCRD&vgnextfmt=default",
+    # Catálogo CAM (forzamos URLs reales abajo)
     "https://datos.comunidad.madrid/catalogos/#/dataset/1908061?view=info",
 ]
 
-# Overrides para la CAM (RDF que compartiste)
+# Overrides para el dataset de CAM (cuando el catálogo expone RDF o visor)
 HARDCODED_DOWNLOADS: Dict[str, List[str]] = {
     "comunidad.madrid/catalogos/#/dataset/1908061": [
         "https://datos.comunidad.madrid/dataset/fb9c5a17-afb0-4e95-a7b1-186e7cacc901/resource/58e39362-fbd1-45f6-865b-91505f6bd199/download/accidentes-de-circulacion-con-victimas-por-ubicacion-y-resultado-del-accidente.csv",
         "https://datos.comunidad.madrid/dataset/fb9c5a17-afb0-4e95-a7b1-186e7cacc901/resource/69a6b3e0-f711-47c5-aa2d-a87b0f82fd31/download/accidentes-de-circulacion-con-victimas-por-ubicacion-y-resultado-del-accidente.json",
     ],
 }
+
+# Carpeta de salida (cada script debe escribir su propio datasheet aquí)
 OUTPUT_DIR = Path("./Accidentes_Scripts/Resultados")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+OUT_FILE = OUTPUT_DIR / "datasheet_accidentes.csv"
 
+# Cabeceras HTTP para scraping
 HEADERS = {
-    "User-Agent": "MateoScraperBot/1.0 (+contact: tu-email@example.com)",
+    "User-Agent": "MateoScraperBot/1.1 (+contact: your-email@example.com)",
     "Accept": "text/html,application/xhtml+xml,application/json,text/csv,application/rdf+xml,*/*",
     "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
 }
@@ -41,48 +51,74 @@ HEADERS = {
 CSV_EXT = (".csv",)
 JSON_EXT = (".json", ".geojson")
 
-# ---------------- Red / scraping ----------------
+# Ventana por defecto: hoy y 2 meses atrás (Plantilla)
+TODAY = datetime.today().date()
+DEFAULT_START = TODAY - relativedelta(months=2)
+DEFAULT_END = TODAY
 
-def fetch(url: str) -> requests.Response:
-    r = requests.get(url, headers=HEADERS, timeout=45)
+# Columnas base del contrato común (todas los datasheets deben incluirlas)
+CONTRACT_BASE = [
+    "dataset", "event_type", "date", "time", "datetime",
+    "district_code", "district_name", "lat", "lon", "location",
+    "severity", "value", "units", "source_id",
+]
+
+# Columnas extra (específicas de accidentes) que intentaremos poblar si existen
+EXTRA_ACCIDENTS = [
+    "road", "cause", "num_vehicles", "num_injured", "num_fatalities"
+]
+
+# Mapeo códigos → nombres de distritos del Ayuntamiento de Madrid
+MADRID_DISTRICTS = {
+    "1": "Centro", "01": "Centro",
+    "2": "Arganzuela", "02": "Arganzuela",
+    "3": "Retiro", "03": "Retiro",
+    "4": "Salamanca", "04": "Salamanca",
+    "5": "Chamartín", "05": "Chamartín",
+    "6": "Tetuán", "06": "Tetuán",
+    "7": "Chamberí", "07": "Chamberí",
+    "8": "Fuencarral-El Pardo", "08": "Fuencarral-El Pardo",
+    "9": "Moncloa-Aravaca", "09": "Moncloa-Aravaca",
+    "10": "Latina",
+    "11": "Carabanchel",
+    "12": "Usera",
+    "13": "Puente de Vallecas",
+    "14": "Moratalaz",
+    "15": "Ciudad Lineal",
+    "16": "Hortaleza",
+    "17": "Villaverde",
+    "18": "Villa de Vallecas",
+    "19": "Vicálvaro",
+    "20": "San Blas-Canillejas",
+    "21": "Barajas",
+}
+
+# ================================
+# Red y parsing
+# ================================
+
+def fetch(url: str, timeout: int = 60) -> requests.Response:
+    """Descarga una URL con headers estándar y timeout."""
+    r = requests.get(url, headers=HEADERS, timeout=timeout)
     r.raise_for_status()
     return r
 
 def fetch_text(url: str) -> str:
+    """Descarga una página y devuelve texto con codificación detectada."""
     r = fetch(url)
     if not r.encoding or r.encoding.lower() in ("ascii", "utf-8"):
         r.encoding = r.apparent_encoding or "utf-8"
     return r.text
 
 def make_soup(html: str) -> BeautifulSoup:
+    """Crea un BeautifulSoup robusto (lxml si está disponible)."""
     try:
         return BeautifulSoup(html, "lxml")
     except Exception:
         return BeautifulSoup(html, "html.parser")
 
-def find_download_links_html(soup: BeautifulSoup, base_url: str) -> List[Tuple[str, str]]:
-    links: List[Tuple[str, str]] = []
-    for a in soup.find_all("a", href=True):
-        label = " ".join(a.get_text(" ", strip=True).split())
-        href = a["href"].strip()
-        if href.startswith("/"):
-            from urllib.parse import urljoin
-            href = urljoin(base_url, href)
-        low = (label + " " + href).lower()
-        if ("descarg" in low) or href.lower().endswith(JSON_EXT) or href.lower().endswith(CSV_EXT):
-            links.append((label, href))
-    def score(item):
-        _, u = item
-        u = u.lower()
-        if u.endswith(".csv"):
-            return 0
-        if u.endswith(".json") or u.endswith(".geojson"):
-            return 1
-        return 5
-    links.sort(key=score)
-    return links
-
 def parse_rdf_for_downloads(xml_text: str) -> List[Tuple[str, str, str]]:
+    """Extrae distribuciones DCAT de un RDF y devuelve (title, mediaType, accessURL)."""
     ns = {
         "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
         "dcat": "http://www.w3.org/ns/dcat#",
@@ -104,7 +140,29 @@ def parse_rdf_for_downloads(xml_text: str) -> List[Tuple[str, str, str]]:
             out.append((title, media, access))
     return out
 
+def find_download_links_html(soup: BeautifulSoup, base_url: str) -> List[Tuple[str, str]]:
+    """Encuentra enlaces de descarga (CSV/JSON) en HTML y los prioriza por CSV."""
+    links: List[Tuple[str, str]] = []
+    for a in soup.find_all("a", href=True):
+        label = " ".join(a.get_text(" ", strip=True).split())
+        href = a["href"].strip()
+        if href.startswith("/"):
+            from urllib.parse import urljoin
+            href = urljoin(base_url, href)
+        low = (label + " " + href).lower()
+        if ("descarg" in low) or href.lower().endswith(JSON_EXT) or href.lower().endswith(CSV_EXT):
+            links.append((label, href))
+    def score(item):
+        _, u = item
+        u = u.lower()
+        if u.endswith(".csv"): return 0
+        if u.endswith(".json") or u.endswith(".geojson"): return 1
+        return 5
+    links.sort(key=score)
+    return links
+
 def find_downloads(page_url: str, html_text: str) -> List[str]:
+    """Dada la ficha, devuelve una lista de URLs de datos (CSV/JSON), con overrides."""
     for key, urls in HARDCODED_DOWNLOADS.items():
         if key in page_url:
             return urls[:]
@@ -117,26 +175,30 @@ def find_downloads(page_url: str, html_text: str) -> List[str]:
     return [u for _, u in pairs]
 
 def load_remote_table(url: str) -> Optional[pd.DataFrame]:
+    """Descarga y normaliza una tabla remota (CSV o JSON/GeoJSON) como DataFrame de strings."""
     print(f"  [Descarga] {url}")
     r = fetch(url)
     ctype = (r.headers.get("Content-Type") or "").lower()
     u = url.lower()
-    # CSV
+
+    # CSV: autodetección de separador; fallback
     if u.endswith(".csv") or "csv" in ctype:
         try:
-            df = pd.read_csv(io.StringIO(r.text), sep=None, engine="python")
+            df = pd.read_csv(io.StringIO(r.text), sep=None, engine="python", dtype=str, low_memory=False)
         except Exception:
             df = None
             for sep in (";", ",", "\t", "|"):
                 try:
-                    df = pd.read_csv(io.StringIO(r.text), sep=sep); break
+                    df = pd.read_csv(io.StringIO(r.text), sep=sep, dtype=str, low_memory=False)
+                    break
                 except Exception:
                     pass
             if df is None:
                 raise
-        print(f"    [OK CSV] {df.shape}")
+        print(f"    [OK CSV] shape={df.shape}")
         return df
-    # JSON / GeoJSON
+
+    # JSON / GeoJSON: normalizar estructura a tabla plana
     if u.endswith(".json") or u.endswith(".geojson") or "json" in ctype:
         data = r.json()
         if isinstance(data, list):
@@ -145,223 +207,114 @@ def load_remote_table(url: str) -> Optional[pd.DataFrame]:
             df = pd.json_normalize(data["features"])
         else:
             df = pd.json_normalize(data)
-        print(f"    [OK JSON] {df.shape}")
+        df = df.astype(str)
+        print(f"    [OK JSON] shape={df.shape}")
         return df
-    print("    [Aviso] Tipo no soportado (solo CSV/JSON).")
+
+    print("    [Aviso] Tipo no soportado (se espera CSV/JSON).")
     return None
 
-# ---------------- Normalización texto ----------------
+# ================================
+# Normalización de columnas y campos
+# ================================
 
-def normalize_text(s: str) -> str:
-    s = s or ""
-    s = s.strip().lower()
+def nfd_lower(s: str) -> str:
+    """Minúsculas + sin acentos."""
+    s = (s or "").strip().lower()
     s = unicodedata.normalize("NFD", s)
-    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")  # quita acentos
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
     return s
 
-# ---------------- Fechas / horas / columnas ----------------
-
-def parse_user_hour(s: str) -> Optional[Tuple[int, int]]:
-    """
-    Acepta:
-      - "08", "8"                 -> 08:00
-      - "08:30", "8:30", "08:05"  -> HH:MM
-      - "8.5", "8,25", "7.75"     -> fracción de hora (min = round(fracción*60))
-    Vacío -> None (sin filtro por hora)
-    """
-    st = (s or "").strip()
-    if not st:
-        return None
-    st = st.lower().replace(" ", "").replace(",", ".").replace("h", ":")
-    if ":" in st:
-        hh_str, mm_str = st.split(":", 1)
-        if not hh_str:
-            raise ValueError("Hora inválida")
-        hh = int(hh_str)
-        mm = int(round(float(mm_str))) if mm_str else 0
-        if mm == 60:
-            hh, mm = hh + 1, 0
-        return hh, mm
-    # decimal
-    if re.match(r"^\d+(\.\d+)?$", st):
-        f = float(st)
-        hh = int(f)
-        mm = int(round((f - hh) * 60))
-        if mm == 60:
-            hh, mm = hh + 1, 0
-        return hh, mm
-    # entero
-    if st.isdigit():
-        return int(st), 0
-    raise ValueError("Formato de hora no reconocido")
-
-def parse_user_date(s: str) -> Optional[date_cls]:
-    s = s.strip()
-    if not s:
-        return None
-    try:
-        dt = dtparser.parse(s, dayfirst=False)  # espera YYYY-MM-DD
-        return dt.date()
-    except Exception:
-        return None
-
-def detect_date_parts(df: pd.DataFrame) -> Optional[Tuple[str, str, str]]:
-    low = {c.lower(): c for c in df.columns}
-    ano = low.get("año") or low.get("ano") or low.get("year") or low.get("anio")
-    mes = low.get("mes") or low.get("month")
-    dia = low.get("dia") or low.get("día") or low.get("day")
-    if ano and mes and dia:
-        return ano, mes, dia
-    return None
-
-def find_timestamp_cols(df: pd.DataFrame) -> List[str]:
-    return [c for c in df.columns if any(k in str(c).lower() for k in
-            ["fecha_hora","fechahora","datetime","timestamp","fecha","date"])]
-
-def find_street_columns(df: pd.DataFrame) -> List[str]:
-    """Detecta columnas de vía/dirección más comunes."""
-    STREET_KEYS = [
-        "calle","via","vía","direccion","dirección","ubicacion","ubicación",
-        "localizacion","localización","lugar","punto","domicilio","via_publica",
-        "carretera","tramo","pk","interseccion","intersección","cruce","kilometro","kilómetro",
-        "street","road","address","addr"
-    ]
-    cols = []
+def normalize_cols(df: pd.DataFrame) -> pd.DataFrame:
+    """Normaliza nombres de columna: minúsculas, sin acentos, espacios->guiones bajos."""
+    mapping = {}
     for c in df.columns:
-        lc = str(c).lower()
-        if any(k in lc for k in STREET_KEYS):
-            cols.append(c)
-    return cols
+        base = nfd_lower(str(c))
+        base = re.sub(r"\s+", "_", base)
+        mapping[c] = base
+    return df.rename(columns=mapping)
 
-# ---------------- Filtrado principal ----------------
+def guess_datetime_cols(df: pd.DataFrame) -> List[str]:
+    """Detecta columnas candidatas de fecha/hora por nombre."""
+    keys = ["fecha_hora","fechahora","datetime","timestamp","fecha","date","f_suceso","f_accidente"]
+    return [c for c in df.columns if any(k in c for k in keys)]
+
+def guess_street_cols(df: pd.DataFrame) -> List[str]:
+    """Detecta columnas relacionadas con vía/dirección/ubicación."""
+    keys = ["calle","via","vía","direccion","dirección","ubicacion","ubicación","lugar","punto","domicilio",
+            "carretera","tramo","pk","interseccion","intersección","cruce","kilometro","kilómetro","street","road","address","addr"]
+    return [c for c in df.columns if any(k in c for k in keys)]
+
+def guess_district_cols(df: pd.DataFrame) -> Tuple[Optional[str], Optional[str]]:
+    """Detecta posibles columnas de código/nombre de distrito."""
+    code_keys = ["codigo_distrito","cod_distrito","cod.distrito","coddistrito","c_distrito","district_code","codigo__distrito"]
+    name_keys = ["distrito","distrito_nombre","nombre_distrito","district","district_name"]
+    code = next((c for c in df.columns if any(k in c for k in code_keys)), None)
+    name = next((c for c in df.columns if any(k in c for k in name_keys)), None)
+    return code, name
 
 def to_hour_minute(value) -> Optional[Tuple[int, int]]:
+    """Convierte representaciones comunes de hora a (HH,MM); acepta decimales tipo 8.5 -> 08:30."""
     if pd.isna(value): return None
     if isinstance(value, pd.Timestamp): return value.hour, value.minute
-    if isinstance(value, datetime): return value.hour, value.minute
-    sv = str(value).strip()
-    # decimal 8.5 -> 8:30
-    try:
-        f = float(sv.replace(",", "."))
-        if 0 <= f < 24 and abs(f - round(f)) > 1e-9:
-            hh = int(math.floor(f)); mm = int(round((f - hh) * 60))
-            return hh, mm
-    except Exception:
-        pass
-    s2 = sv.replace(".", ":")
-    m = re.match(r"^\s*(\d{1,2})\s*[:hH]?\s*(\d{1,2})?\s*$", s2)
+    sv = str(value).strip().replace(",", ".")
+    if re.match(r"^\d+(\.\d+)?$", sv):
+        f = float(sv)
+        hh = int(math.floor(f))
+        mm = int(round((f - hh) * 60))
+        return hh, (0 if mm == 60 else mm)
+    m = re.match(r"^\s*(\d{1,2})\s*[:hH]?\s*(\d{1,2})?\s*$", sv.replace(".", ":"))
     if m:
         return int(m.group(1)), int(m.group(2) or 0)
-    if sv.isdigit():
-        hh = int(sv); 
-        if 0 <= hh < 24: return hh, 0
     try:
         dt = dtparser.parse(sv, dayfirst=True, fuzzy=True)
         return dt.hour, dt.minute
     except Exception:
         return None
 
-def filter_df(df: pd.DataFrame,
-              start_date: Optional[date_cls],
-              end_date: Optional[date_cls],
-              street_query: Optional[str],
-              hour_mm: Optional[Tuple[int, int]]) -> pd.DataFrame:
-    """
-    Aplica filtros:
-      - fecha en [start_date, end_date] si se proporcionan
-      - calle (contains insensible a acentos)
-      - hora (exacta HH:MM; si dataset no trae minutos, cae a solo HH)
-    """
+def as_date(s: Any) -> str:
+    """Devuelve fecha ISO YYYY-MM-DD o '' si no válida (luego se rellena a 'NA')."""
+    if s is None or (isinstance(s, float) and math.isnan(s)):
+        return ""
+    try:
+        dt = pd.to_datetime(str(s), errors="coerce", dayfirst=True)
+        if pd.isna(dt):
+            return ""
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        return ""
+
+def as_time(s: Any) -> str:
+    """Devuelve hora HH:MM o '' si no válida (luego se rellena a 'NA')."""
+    t = to_hour_minute(s)
+    if not t:
+        return ""
+    hh, mm = t
+    return f"{hh:02d}:{mm:02d}"
+
+# ================================
+# Filtrado por ventana temporal y procesamiento
+# ================================
+
+def filter_by_window(df: pd.DataFrame, start_date: date_cls, end_date: date_cls) -> pd.DataFrame:
+    """Filtra filas cuya(s) columna(s) de fecha/hora caigan en [start_date, end_date]."""
     if df.empty:
         return df
-
-    # 1) Fecha
-    date_mask: Optional[pd.Series] = None
-    if start_date and end_date:
-        # timestamp completo
-        for c in find_timestamp_cols(df):
-            try:
-                ts = pd.to_datetime(df[c], errors="coerce", dayfirst=True)
-                if ts.notna().mean() > 0.5:
-                    m = (ts.dt.date >= start_date) & (ts.dt.date <= end_date)
-                    date_mask = m if date_mask is None else (date_mask | m)
-            except Exception:
-                pass
-        # partes ANO/MES/DIA
-        parts = detect_date_parts(df)
-        if parts:
-            ano, mes, dia = parts
-            y = pd.to_numeric(df[ano], errors="coerce")
-            m = pd.to_numeric(df[mes], errors="coerce")
-            d = pd.to_numeric(df[dia], errors="coerce")
-            # construimos date como strings para comparar rango
-            try:
-                built = pd.to_datetime(dict(year=y, month=m, day=d), errors="coerce")
-                m2 = (built.dt.date >= start_date) & (built.dt.date <= end_date)
-                date_mask = m2 if date_mask is None else (date_mask | m2)
-            except Exception:
-                pass
-        # si no logramos ninguna máscara de fecha y se pidió fecha -> devolvemos vacío
-        if date_mask is None:
-            return df.iloc[0:0]
-
-    # 2) Calle
-    street_mask: Optional[pd.Series] = None
-    if street_query:
-        target = normalize_text(street_query)
-        cols = find_street_columns(df)
-        for c in cols:
-            try:
-                col_norm = df[c].astype(str).map(normalize_text)
-                m = col_norm.str.contains(re.escape(target), na=False)
-                street_mask = m if street_mask is None else (street_mask | m)
-            except Exception:
-                continue
-        # si no hay columnas de calle y se pidió filtro -> vacío
-        if street_mask is None:
-            return df.iloc[0:0]
-
-    # 3) Hora
-    hour_mask: Optional[pd.Series] = None
-    if hour_mm is not None:
-        hh, mm = hour_mm
-        # timestamp
-        for c in find_timestamp_cols(df):
-            try:
-                ts = pd.to_datetime(df[c], errors="coerce", dayfirst=True)
-                if ts.notna().mean() > 0.5:
-                    m = (ts.dt.hour == hh) & (ts.dt.minute == mm)
-                    if m.sum() == 0:
-                        m = (ts.dt.hour == hh)  # fallback solo hora
-                    hour_mask = m if hour_mask is None else (hour_mask | m)
-            except Exception:
-                pass
-        # columnas de hora explícitas
-        H_KEYS = ["hora","time","tiempo","h_acc","acc_hora"]
-        for c in df.columns:
-            lc = str(c).lower()
-            if any(k in lc for k in H_KEYS):
-                vals = df[c].apply(to_hour_minute)
-                m = vals.apply(lambda t: t is not None and t[0] == hh and t[1] == mm)
-                if m.sum() == 0:
-                    m = vals.apply(lambda t: t is not None and t[0] == hh)
-                hour_mask = m if hour_mask is None else (hour_mask | m)
-
-    # 4) Combinar
-    mask = pd.Series([True] * len(df))
-    if date_mask is not None:   mask &= date_mask.fillna(False)
-    if street_mask is not None: mask &= street_mask.fillna(False)
-    if hour_mask is not None:   mask &= hour_mask.fillna(False)
+    mask = None
+    for c in guess_datetime_cols(df):
+        try:
+            ts = pd.to_datetime(df[c], errors="coerce", dayfirst=True)
+            m = (ts.dt.date >= start_date) & (ts.dt.date <= end_date)
+            mask = m if mask is None else (mask | m)
+        except Exception:
+            continue
+    if mask is None:
+        return df.iloc[0:0]
     return df[mask]
 
-# ---------------- Proceso por dataset ----------------
-
-def process_one(page_url: str,
-                start_date: Optional[date_cls],
-                end_date: Optional[date_cls],
-                street_query: Optional[str],
-                hour_mm: Optional[Tuple[int, int]]) -> pd.DataFrame:
-    print(f"\n[Procesando] {page_url}")
+def process_one(page_url: str, start_date: date_cls, end_date: date_cls) -> pd.DataFrame:
+    """Procesa una ficha: encuentra descargas, carga la primera que tenga filas en la ventana."""
+    print(f"\n[Ficha] {page_url}")
     try:
         html = fetch_text(page_url)
     except Exception as e:
@@ -379,93 +332,231 @@ def process_one(page_url: str,
         try:
             df = load_remote_table(dl)
         except Exception as e:
-            print(f"  [Error al descargar datos] {e}")
+            print(f"  [Error descarga] {e}")
             continue
         if df is None or df.empty:
             continue
 
-        filtered = filter_df(df, start_date, end_date, street_query, hour_mm)
-        print(f"  [Filtrado] {filtered.shape} filas")
-        if not filtered.empty:
-            filtered = filtered.copy()
-            filtered["__origen__"] = page_url
-            filtered["__descarga__"] = dl
-            return filtered
+        df = normalize_cols(df)
+        df = filter_by_window(df, start_date, end_date)
+        if df.empty:
+            continue
 
-    print("  [Aviso] Ninguna descarga produjo filas para ese filtro.")
+        # Proveniencia para trazabilidad
+        df["__source_page__"] = page_url
+        df["__download__"] = dl
+        print(f"  [Filtrado] {df.shape} filas")
+        return df
+
+    print("  [Info] Ninguna descarga produjo filas en la ventana.")
     return pd.DataFrame()
 
-# ---------------- Main ----------------
+# ================================
+# Mapeo al contrato común (accidentes)
+# ================================
+
+def build_contract_from_raw(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """Mapea el DataFrame bruto al contrato común + campos útiles de accidentes."""
+    if df_raw.empty:
+        return df_raw
+
+    df = df_raw.copy()
+
+    # 1) Inicializa contrato base
+    out = pd.DataFrame()
+    out["dataset"] = "accidentes"
+    out["event_type"] = "accidente"
+
+    # 2) Fecha/hora
+    dt_cols = guess_datetime_cols(df)
+    if dt_cols:
+        full = None
+        for c in dt_cols:
+            if any(k in c for k in ["fecha_hora","fechahora","datetime","timestamp"]):
+                full = c; break
+        if full is None:
+            full = dt_cols[0]
+
+        dt_parsed = pd.to_datetime(df[full], errors="coerce", dayfirst=True)
+        out["datetime"] = dt_parsed.dt.strftime("%Y-%m-%d %H:%M:%S")
+        out["date"] = dt_parsed.dt.strftime("%Y-%m-%d")
+        out["time"] = dt_parsed.dt.strftime("%H:%M")
+
+        out.loc[out["time"] == "NaT", "time"] = ""
+        out.loc[out["date"] == "NaT", "date"] = ""
+        out.loc[out["datetime"] == "NaT", "datetime"] = ""
+    else:
+        dcol = next((c for c in df.columns if c in ("fecha","date","dia","día")), None)
+        tcol = next((c for c in df.columns if c in ("hora","time","hr","h_acc","acc_hora")), None)
+        out["date"] = df[dcol].map(as_date) if dcol else ""
+        out["time"] = df[tcol].map(as_time) if tcol else ""
+        out["datetime"] = ""
+
+    # 3) Distrito (código/nombre) con mapeo a nombres
+    dcode, dname = guess_district_cols(df)
+
+    # Extrae serie de código (si existe explícita o si "nombre" es numérico)
+    code_series = None
+    if dcode:
+        code_series = df[dcode].astype(str).str.extract(r"(\d+)")[0]
+    elif dname and df[dname].astype(str).str.match(r"^\s*\d+\s*$").all():
+        code_series = df[dname].astype(str).str.extract(r"(\d+)")[0]
+
+    # Asignar district_code
+    out["district_code"] = (
+        code_series.fillna("") if code_series is not None
+        else (df.get(dcode, "").astype(str) if dcode else "")
+    )
+
+    # Asignar district_name (si no hay nombre real, mapear por código)
+    if dname and not df[dname].astype(str).str.match(r"^\s*\d+\s*$").all():
+        out["district_name"] = df[dname].astype(str)
+    else:
+        if code_series is not None:
+            out["district_name"] = code_series.map(
+                lambda x: MADRID_DISTRICTS.get(x, MADRID_DISTRICTS.get(x.zfill(2), "NA"))
+            )
+        else:
+            out["district_name"] = "NA"
+
+    # 4) Lat/Lon
+    lat_col = next((c for c in df.columns if c in ("lat","latitude","y","latitud")), None)
+    lon_col = next((c for c in df.columns if c in ("lon","longitud","long","x","longitude")), None)
+    out["lat"] = df.get(lat_col, "") if lat_col else ""
+    out["lon"] = df.get(lon_col, "") if lon_col else ""
+
+    # 5) Ubicación (vía/calle)
+    street_cols = guess_street_cols(df)
+    out["location"] = df[street_cols[0]].astype(str) if street_cols else ""
+
+    # 6) Severidad / valor / unidades
+    sev_candidates = ["gravedad","lesividad","severidad","resultado","resultado_accidente","severity"]
+    sev_col = next((c for c in df.columns if c in sev_candidates), None)
+    out["severity"] = df.get(sev_col, "") if sev_col else ""
+    out["value"] = "NA"   # Plantilla: 'NA' cuando no hay métrica
+    out["units"] = "NA"
+
+    # 7) ID origen
+    id_candidates = ["id","codigo","cod_accidente","id_accidente","expediente","num_exp","codigo_accidente"]
+    id_col = next((c for c in df.columns if c in id_candidates), None)
+    out["source_id"] = df.get(id_col, "") if id_col else df.get("__download__", "")
+
+    # 8) Extras de accidentes (opcionales)
+    road_candidates = ["carretera","via","tramo","pk","road","calle","vía"]
+    cause_candidates = ["causa","causa_accidente","motivo","concurrencia","tipo_accidente","descripcion"]
+    nv_candidates = ["n_vehiculos","num_vehiculos","nvehiculos","vehiculos_implicados","vehiculos"]
+    ni_candidates = ["n_heridos","num_heridos","heridos","lesionados","n_lesionados"]
+    nf_candidates = ["n_fallecidos","num_fallecidos","fallecidos","muertos","n_muertos"]
+
+    def pick_first(cols: List[str]) -> Optional[str]:
+        return next((c for c in df.columns if c in cols), None)
+
+    road_col = pick_first(road_candidates)
+    cause_col = pick_first(cause_candidates)
+    nv = pick_first(nv_candidates)
+    ni = pick_first(ni_candidates)
+    nf = pick_first(nf_candidates)
+
+    out["road"] = df.get(road_col, "") if road_col else out.get("location", "")
+    out["cause"] = df.get(cause_col, "") if cause_col else ""
+    out["num_vehicles"] = df.get(nv, "") if nv else ""
+    out["num_injured"] = df.get(ni, "") if ni else ""
+    out["num_fatalities"] = df.get(nf, "") if nf else ""
+
+    # 9) Proveniencia (útil para depurar; no es parte del contrato pero lo mantenemos)
+    if "__source_page__" in df.columns:
+        out["__source_page__"] = df["__source_page__"]
+    if "__download__" in df.columns:
+        out["__download__"] = df["__download__"]
+
+    # 10) Garantiza columnas del contrato y extras
+    for col in CONTRACT_BASE:
+        if col not in out.columns:
+            out[col] = ""
+    for col in EXTRA_ACCIDENTS:
+        if col not in out.columns:
+            out[col] = ""
+
+    # (Opcional) Si no hay hora real y no hay datetime, dejar vacío para que luego sea 'NA'
+    out.loc[out["time"].isin(["NaT", "00:00"]) & out["datetime"].eq(""), "time"] = ""
+
+    # Orden tentativo (recortaremos al final)
+    ordered = CONTRACT_BASE + EXTRA_ACCIDENTS + [c for c in out.columns if c not in CONTRACT_BASE + EXTRA_ACCIDENTS]
+    out = out[ordered]
+    return out
+
+# ================================
+# Main
+# ================================
 
 def main():
-    # Fecha (opcional) → si se da, usaremos [fecha-3 meses, fecha]
-    user_d = input("Introduce la FECHA (YYYY-MM-DD) o pulsa Enter para omitir: ").strip()
-    target_date = parse_user_date(user_d)
-    if user_d and target_date is None:
-        print("Fecha inválida. Usa formato YYYY-MM-DD (ej: 2025-10-15).")
-        sys.exit(1)
-
-    start_date = end_date = None
-    if target_date:
-        end_date = target_date
-        start_date = target_date - relativedelta(months=3)
-        print(f"[Rango de fechas] {start_date.isoformat()} → {end_date.isoformat()}")
-
-    # Calle (opcional)
-    street_query = input("Introduce la CALLE (parcial, ej: 'gran via') o pulsa Enter para omitir: ").strip()
-    if not street_query:
-        street_query = None
-
-    # Hora (opcional; admite fracciones)
-    user_h = input("Introduce la HORA (opcional: ej 08, 08:30, 8.5, 8,25) o Enter para omitir: ").strip()
-    try:
-        hour_mm = parse_user_hour(user_h) if user_h else None
-        if hour_mm:
-            hh, mm = hour_mm
-            assert 0 <= hh < 24 and 0 <= mm < 60
-    except Exception:
-        print("Hora inválida. Usa 08, 08:30, 8.5, 8,25 …")
-        sys.exit(1)
+    # Ventana temporal (Plantilla: hoy-2m -> hoy)
+    start_date = DEFAULT_START
+    end_date = DEFAULT_END
+    print(f"[Ventana] {start_date.isoformat()} -> {end_date.isoformat()}")
 
     parts = []
     for url in DATASET_PAGES:
         try:
-            df = process_one(url, start_date, end_date, street_query, hour_mm)
+            df = process_one(url, start_date, end_date)
             if not df.empty:
                 parts.append(df)
         except Exception as e:
             print(f"  [Error inesperado] {e}")
 
     if not parts:
-        print("\n[Resultado] 0 filas encontradas con ese filtro.")
+        print("\n[Resultado] No se encontraron filas en la ventana seleccionada.")
+        # CSV vacío con SOLO las columnas del contrato
+        empty = pd.DataFrame(columns=CONTRACT_BASE)
+        empty.to_csv(
+            OUT_FILE, index=False, sep=";", encoding="utf-8-sig",
+            quoting=csv.QUOTE_NONE, escapechar="\\", lineterminator="\n"
+        )
+        print(f"[OK] Datasheet vacío escrito: {OUT_FILE.resolve()}")
         return
 
-    out = pd.concat(parts, ignore_index=True, sort=False)
-    # ordenar si hay fecha
-    for c in ["fecha_hora","FechaHora","FECHA_HORA","fecha","FECHA","date","DATE"]:
-        if c in out.columns:
-            out = out.sort_values(by=c)
-            break
+    raw = pd.concat(parts, ignore_index=True, sort=False)
+    standardized = build_contract_from_raw(raw)
 
-    # Nombre de archivo
-    suffix_parts = []
-    if target_date:
-        suffix_parts.append(f"{start_date.isoformat()}_{end_date.isoformat()}")
-    if street_query:
-        slug = re.sub(r"[^a-z0-9]+", "_", normalize_text(street_query)).strip("_")
-        if slug:
-            suffix_parts.append(slug)
-    if hour_mm:
-        suffix_parts.append(f"{hour_mm[0]:02d}{hour_mm[1]:02d}")
-    suffix = "__".join(suffix_parts) if suffix_parts else "sin_filtros"
+    # === Plantilla compliance: NA también para strings vacíos/espacios y NaN ===
+    standardized = standardized.fillna("NA")
+    standardized = standardized.replace(r"^\s*$", "NA", regex=True)
+    for c in CONTRACT_BASE:
+        if c not in standardized.columns:
+            standardized[c] = "NA"
 
-    out_file = OUTPUT_DIR / f"accidentes_{suffix}.csv"
-    out.to_csv(out_file, index=False, sep=";", encoding="utf-8")
+    # Recortar exactamente a las 14 columnas del contrato
+    standardized = standardized[CONTRACT_BASE]
 
-    print(f"\n[OK] Guardado: {out_file.resolve()}")
-    print(f"[Filas totales] {len(out)}")
+    # Guardado final (utf-8-sig recomendado para Excel)
+    standardized.to_csv(
+        OUT_FILE, index=False, sep=";", encoding="utf-8-sig",
+        quoting=csv.QUOTE_NONE, escapechar="\\", lineterminator="\n"
+    )
+
+    print(f"\n[OK] Datasheet escrito: {OUT_FILE.resolve()}")
+    print(f"[Filas] {len(standardized)}")
     print("\n[Preview]")
-    print(out.head(10))
+    print(standardized.head(10))
+
+    # ===== OPCIONAL: Guardar extras en CSV aparte =====
+    # Si quieres conservar columnas extra para análisis internos:
+    full_std = build_contract_from_raw(raw).fillna("NA").replace(r"^\s*$", "NA", regex=True)
+    extras_cols = [c for c in EXTRA_ACCIDENTS if c in full_std.columns]
+    keep_cols = []
+    if extras_cols:
+        keep_cols.extend(extras_cols)
+        for meta in ["__source_page__", "__download__"]:
+            if meta in full_std.columns and meta not in keep_cols:
+                keep_cols.append(meta)
+    if keep_cols:
+        extra_df = full_std[keep_cols].copy()
+        extra_path = OUT_FILE.with_name(OUT_FILE.stem.replace("datasheet_", "extras_") + OUT_FILE.suffix)
+        extra_df.to_csv(
+            extra_path, index=False, sep=";", encoding="utf-8-sig",
+            quoting=csv.QUOTE_NONE, escapechar="\\", lineterminator="\n"
+        )
+        print(f"[OK] Extras guardados en: {extra_path.resolve()}")
 
 if __name__ == "__main__":
     main()

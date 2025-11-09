@@ -1,7 +1,16 @@
+# -*- coding: utf-8 -*-
+"""
+Emergencias (Madrid) — Datasheet normalizado (contrato común)
+- Lee varias fichas del portal (SAMUR, Bomberos, Policía…)
+- Descarta agregados sin fecha/hora por evento
+- Ventana temporal: HOY y 2 meses hacia atrás
+- Exporta: ./Emergencias_Scripts/Resultados/datasheet_emergencias.csv
+- Contrato: dataset,event_type,date,time,datetime,district_code,district_name,lat,lon,location,severity,value,units,source_id
+"""
+
 import re
 import io
-import sys
-import math
+import csv
 import unicodedata
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
@@ -13,82 +22,85 @@ from bs4 import BeautifulSoup
 from dateutil import parser as dtparser
 from dateutil.relativedelta import relativedelta
 
-# ----------- Fichas -----------
+# ----------- Fichas (puedes ampliar/ajustar) -----------
 PAGES = [
-    # Bomberos (agregado mensual: se omitirá al filtrar eventos con fecha/hora)
+    # Bomberos (suele ser agregado mensual → será omitido si no hay fecha/hora por evento)
     "https://datos.madrid.es/portal/site/egob/menuitem.c05c1f754a33a9fbe4b2e4b284f1a5a0/?vgnextoid=fa677996afc6f510VgnVCM1000001d4a900aRCRD&vgnextchannel=374512b9ace9f310VgnVCM100000171f5a0aRCRD&vgnextfmt=default",
-    # SAMUR activaciones
+    # SAMUR activaciones (evento)
     "https://datos.madrid.es/portal/site/egob/menuitem.c05c1f754a33a9fbe4b2e4b284f1a5a0/?vgnextoid=50d7d35982d6f510VgnVCM1000001d4a900aRCRD&vgnextchannel=374512b9ace9f310VgnVCM100000171f5a0aRCRD&vgnextfmt=default",
-    # Tercera ficha (otra fuente de emergencias)
+    # Policía / Emergencias (ejemplo)
     "https://datos.madrid.es/portal/site/egob/menuitem.c05c1f754a33a9fbe4b2e4b284f1a5a0/?vgnextoid=0b006dace9578610VgnVCM1000001d4a900aRCRD&vgnextchannel=374512b9ace9f310VgnVCM100000171f5a0aRCRD&vgnextfmt=default",
 ]
 
 # ----------- Salida -----------
 OUTPUT_DIR = Path("./Emergencias_Scripts/Resultados")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-OUT_FILE = OUTPUT_DIR / "emergencias_filtrado.csv"
+OUT_FILE = OUTPUT_DIR / "datasheet_emergencias.csv"
 
 # ----------- Red -----------
 HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/json,text/csv,*/*",
     "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+    "User-Agent": "MateoScraperBot/1.7 (+contact: your-email@example.com)",
 }
-REQ_TIMEOUT = 45
+REQ_TIMEOUT = 60
 CSV_EXT = (".csv",)
 JSON_EXT = (".json", ".geojson")
 
-# Excluir ruido
+# Enlaces a ignorar
 EXCLUDE_PATTERNS = [
     "wms", "wmts", "ogc", "service", "arcgis", "esri",
     ".zip", ".shp", ".dbf", ".prj", ".kml", ".kmz",
     ".pdf", ".rdf", ".xml", "sparql", "mailto:", "javascript:", "#"
 ]
+# Pistas para priorizar enlaces de datos
 PREFERRED_HINTS = ["download", "descarg", "csv", "json"]
 
-# Overrides si alguna ficha requiere URL directa
+# Overrides (si conoces URL de datos exacta por ficha)
 OVERRIDES: Dict[str, str] = {
     # "50d7d35982d6f510": "https://datos.madrid.es/egobfiles/.../activaciones_samur_2025.csv",
 }
 
-# Margen por defecto cuando el usuario indica fecha
+# ----------- Ventana temporal -----------
+TODAY = datetime.today().date()
 MONTHS_BACK_DEFAULT = 2
+START_DATE = TODAY - relativedelta(months=MONTHS_BACK_DEFAULT)
+END_DATE = TODAY
 
-# ----------- Utilidades ----------
-def normalize_text(s: str) -> str:
+# ----------- Contrato común -----------
+CONTRACT_COLS = [
+    "dataset","event_type","date","time","datetime",
+    "district_code","district_name","lat","lon","location",
+    "severity","value","units","source_id"
+]
+
+# ----------- Mapa distrito nombre ↔ código (Madrid) -----------
+# Nota: nombres normalizados (sin acentos, minúsculas)
+DISTRICT_NAME_TO_CODE = {
+    "centro": "01", "arganzuela": "02", "retiro": "03", "salamanca": "04",
+    "chamartin": "05", "tetuan": "06", "chamberi": "07", "fuencarral-el pardo": "08",
+    "moncloa-aravaca": "09", "latina": "10", "carabanchel": "11", "usera": "12",
+    "puente de vallecas": "13", "moratalaz": "14", "ciudad lineal": "15", "hortaleza": "16",
+    "villaverde": "17", "villa de vallecas": "18", "vicalvaro": "19", "san blas-canillejas": "20",
+    "barajas": "21"
+}
+CODE_TO_DISTRICT_NAME = {v: k.title() for k, v in DISTRICT_NAME_TO_CODE.items()}
+
+# ============= Utilidades texto / normalización =============
+def nfd_lower(s: str) -> str:
+    """Minúsculas + sin acentos."""
     s = (s or "").strip().lower()
     s = unicodedata.normalize("NFD", s)
     return "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
 
-def parse_user_date(s: str) -> Optional[date_cls]:
-    s = (s or "").strip()
-    if not s:
-        return None
-    try:
-        return dtparser.parse(s, dayfirst=False).date()
-    except Exception:
-        return None
-
-def parse_user_hour(s: str) -> Optional[Tuple[int, int]]:
-    st = (s or "").strip()
-    if not st:
-        return None
-    st = st.lower().replace(" ", "").replace(",", ".").replace("h", ":")
-    if ":" in st:
-        hh_str, mm_str = st.split(":", 1)
-        if not hh_str: raise ValueError("Hora inválida")
-        hh = int(hh_str)
-        mm = int(round(float(mm_str))) if mm_str else 0
-        if mm == 60: hh, mm = hh + 1, 0
-        return hh, mm
-    if re.match(r"^\d+(\.\d+)?$", st):
-        f = float(st)
-        hh = int(f)
-        mm = int(round((f - hh) * 60))
-        if mm == 60: hh, mm = hh + 1, 0
-        return hh, mm
-    if st.isdigit():
-        return int(st), 0
-    raise ValueError("Formato de hora no reconocido")
+def normalize_cols_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Normaliza nombres de columnas (minúsculas, sin acentos, espacios->guión bajo)."""
+    mapping = {}
+    for c in df.columns:
+        base = nfd_lower(str(c))
+        base = re.sub(r"\s+", "_", base)
+        mapping[c] = base
+    return df.rename(columns=mapping)
 
 def fetch_html(url: str) -> str:
     r = requests.get(url, headers=HEADERS, timeout=REQ_TIMEOUT)
@@ -105,21 +117,15 @@ def make_soup(html: str) -> BeautifulSoup:
 
 def absolutize(base_url: str, href: str) -> str:
     from urllib.parse import urljoin
-    href = href.strip()
-    if href.startswith("//"):
-        return "https:" + href
-    if href.startswith("/"):
-        return urljoin(base_url, href)
+    href = (href or "").strip()
+    if href.startswith("//"): return "https:" + href
+    if href.startswith("/"):  return urljoin(base_url, href)
     return href
 
 def head_or_get_headers(url: str) -> Optional[requests.Response]:
     try:
         r = requests.head(url, headers=HEADERS, timeout=REQ_TIMEOUT, allow_redirects=True)
-        if r.status_code >= 400:
-            return None
-        ct = (r.headers.get("Content-Type") or "").lower()
-        cd = (r.headers.get("Content-Disposition") or "")
-        if ct or cd:
+        if r.status_code < 400 and (r.headers.get("Content-Type") or r.headers.get("Content-Disposition")):
             return r
         r2 = requests.get(url, headers=HEADERS, timeout=REQ_TIMEOUT, stream=True, allow_redirects=True)
         return r2
@@ -129,28 +135,17 @@ def head_or_get_headers(url: str) -> Optional[requests.Response]:
 def content_says_data(resp: requests.Response, url: str) -> bool:
     ct = (resp.headers.get("Content-Type") or "").lower()
     cd = (resp.headers.get("Content-Disposition") or "")
-    ul = url.lower()
+    ul = (url or "").lower()
     if "text/csv" in ct or "application/json" in ct or "application/geo+json" in ct:
         return True
     m = re.search(r'filename\s*=\s*"?([^";]+)"?', cd, flags=re.I)
     if m:
         fname = m.group(1).strip().lower()
-        if fname.endswith(".csv") or fname.endswith(".json") or fname.endswith(".geojson"):
+        if fname.endswith((".csv",".json",".geojson")):
             return True
-    if ul.endswith(".csv") or ul.endswith(".json") or ul.endswith(".geojson"):
+    if ul.endswith((".csv",".json",".geojson")):
         return True
     return False
-
-def is_event_level(df: pd.DataFrame) -> bool:
-    """True si hay fecha/hora por evento. False si es agregado (solo AÑO/MES etc.)."""
-    cols = [c.lower() for c in df.columns]
-    has_time = any("hora" in c or "time" in c for c in cols)
-    has_date = any(x in c for c in cols for x in ["fecha_hora","fechahora","datetime","timestamp","fecha","date"])
-    has_month = any(c == "mes" or c == "month" for c in cols)
-    has_year  = any(c in ["año","ano","anio","year"] for c in cols)
-    if (has_month or has_year) and not (has_time or has_date):
-        return False
-    return has_time or has_date
 
 def find_valid_data_url_from_page(page_url: str, soup: BeautifulSoup) -> Optional[str]:
     for key, forced in OVERRIDES.items():
@@ -166,7 +161,8 @@ def find_valid_data_url_from_page(page_url: str, soup: BeautifulSoup) -> Optiona
             continue
         if any(pat in low_href for pat in EXCLUDE_PATTERNS):
             continue
-        looks_data = low_href.endswith(CSV_EXT) or low_href.endswith(JSON_EXT) or any(h in (low_href + " " + low_label) for h in PREFERRED_HINTS)
+        looks_data = low_href.endswith(CSV_EXT) or low_href.endswith(JSON_EXT) \
+                     or any(h in (low_href + " " + low_label) for h in PREFERRED_HINTS)
         if not looks_data:
             continue
         score = 1000
@@ -187,21 +183,33 @@ def find_valid_data_url_from_page(page_url: str, soup: BeautifulSoup) -> Optiona
     return None
 
 def load_remote_table(url: str) -> Optional[pd.DataFrame]:
-    r = requests.get(url, headers=HEADERS, timeout=60)
+    r = requests.get(url, headers=HEADERS, timeout=REQ_TIMEOUT)
     r.raise_for_status()
     ctype = (r.headers.get("Content-Type") or "").lower()
     u = url.lower()
+
     # CSV
     if u.endswith(".csv") or "csv" in ctype:
-        try:
-            return pd.read_csv(io.StringIO(r.text), sep=None, engine="python")
-        except Exception:
+        data = r.content
+        for enc in ("utf-8", "latin-1", None):
             for sep in (";", ",", "\t", "|"):
                 try:
-                    return pd.read_csv(io.StringIO(r.text), sep=sep)
+                    if enc is None:
+                        df = pd.read_csv(io.BytesIO(data), sep=sep, dtype=str, low_memory=False)
+                    else:
+                        df = pd.read_csv(io.BytesIO(data), sep=sep, dtype=str, low_memory=False, encoding=enc)
+                    if df.shape[1] == 1 and sep != ",":
+                        continue
+                    return df
                 except Exception:
-                    pass
-            raise
+                    continue
+        # Autodetección textual
+        try:
+            txt = r.content.decode("utf-8", errors="ignore")
+            return pd.read_csv(io.StringIO(txt), sep=None, engine="python", dtype=str, low_memory=False)
+        except Exception:
+            return None
+
     # JSON / GeoJSON
     if u.endswith(".json") or u.endswith(".geojson") or "json" in ctype:
         data = r.json()
@@ -210,139 +218,203 @@ def load_remote_table(url: str) -> Optional[pd.DataFrame]:
         if isinstance(data, dict) and "features" in data and isinstance(data["features"], list):
             return pd.json_normalize(data["features"])
         return pd.json_normalize(data)
+
     return None
 
-# ---------- Filtros ----------
-def in_date_window(d: date_cls, target_date: Optional[date_cls], months_back: int) -> bool:
-    if target_date is None:
-        return True
-    start = target_date - relativedelta(months=months_back)
-    return start <= d <= target_date
+# ============= Detección de granularidad =============
+def is_event_level(df: pd.DataFrame) -> bool:
+    """True si hay fecha/hora por evento. False si es agregado (solo AÑO/MES...)."""
+    cols = [str(c).lower() for c in df.columns]
+    has_time = any("hora" in c or "time" in c for c in cols)
+    has_date = any(x in c for c in cols for x in ["fecha_hora","fechahora","datetime","timestamp","fecha","date"])
+    has_month = any(c == "mes" or c == "month" for c in cols)
+    has_year  = any(c in ["año","ano","anio","year"] for c in cols)
+    if (has_month or has_year) and not (has_time or has_date):
+        return False
+    return has_time or has_date
 
-def find_timestamp_cols(df: pd.DataFrame) -> List[str]:
-    return [c for c in df.columns if any(k in str(c).lower() for k in
-            ["fecha_hora","fechahora","datetime","timestamp","fecha","date","hora","time"])]
+# ============= Ventana de fechas =============
+def in_date_window(d: date_cls, end_date: date_cls, months_back: int) -> bool:
+    start = end_date - relativedelta(months=months_back)
+    return start <= d <= end_date
 
-def find_location_columns(df: pd.DataFrame) -> List[str]:
-    keys = [
-        "calle","vía","via","direccion","dirección","ubicacion","ubicación",
-        "lugar","punto","domicilio","via_publica","carretera","tramo","cruce",
-        "street","road","address","addr","localizacion","localización",
-        "distrito","barrio","municipio","localidad","seccion","sección","zona"
-    ]
-    return [c for c in df.columns if any(k in str(c).lower() for k in keys)]
+def extract_event_datetime_cols(row: pd.Series, df_cols: List[str]) -> Tuple[str, str, str]:
+    """Construye date, time, datetime tomando columnas posibles (robusto)."""
+    # Compuesto
+    for c in df_cols:
+        lc = str(c).lower()
+        if any(k in lc for k in ["fecha_hora","fechahora","datetime","timestamp"]):
+            ts = pd.to_datetime(row[c], errors="coerce", dayfirst=True)
+            if pd.notna(ts):
+                return ts.date().isoformat(), ts.strftime("%H:%M:%S"), ts.strftime("%Y-%m-%d %H:%M:%S")
+    # Separadas
+    fecha_col = next((c for c in df_cols if "fecha" in str(c).lower() or "date" in str(c).lower()), None)
+    hora_col  = next((c for c in df_cols if "hora"  in str(c).lower() or "time" in str(c).lower()), None)
+    if fecha_col:
+        f = pd.to_datetime(row[fecha_col], errors="coerce", dayfirst=True)
+        if pd.notna(f):
+            if hora_col:
+                raw = str(row[hora_col] or "").strip().replace(",", ".")
+                # 8.5 → 08:30:00 ; 8:5 → 08:05:00
+                hhmmss = ""
+                if re.fullmatch(r"\d+(?:\.\d+)?", raw):
+                    ff = float(raw); hh = int(ff); mm = int(round((ff - hh)*60)); 
+                    if mm == 60: hh += 1; mm = 0
+                    hhmmss = f"{hh:02d}:{mm:02d}:00"
+                elif ":" in raw or "h" in raw:
+                    raw2 = raw.replace("h", ":")
+                    try:
+                        hh, mm = raw2.split(":", 1)
+                        mm = ''.join(ch for ch in mm if ch.isdigit()) or "0"
+                        hhmmss = f"{int(hh):02d}:{int(mm):02d}:00"
+                    except Exception:
+                        hhmmss = ""
+                if hhmmss:
+                    return f.date().isoformat(), hhmmss, f"{f.date().isoformat()} {hhmmss}"
+            return f.date().isoformat(), "", f.strftime("%Y-%m-%d")
+    return "", "", ""
 
-def to_hour_minute(value) -> Optional[Tuple[int, int]]:
-    if pd.isna(value): return None
-    if isinstance(value, pd.Timestamp): return value.hour, value.minute
-    if isinstance(value, datetime): return value.hour, value.minute
-    sv = str(value).strip()
-    try:
-        f = float(sv.replace(",", "."))
-        if 0 <= f < 24 and abs(f - round(f)) > 1e-9:
-            hh = int(math.floor(f)); mm = int(round((f - hh) * 60))
-            return hh, mm
-    except Exception:
-        pass
-    s2 = sv.replace(".", ":")
-    m = re.match(r"^\s*(\d{1,2})\s*[:hH]?\s*(\d{1,2})?\s*$", s2)
+# ============= Geoparsing sencillo =============
+def split_geopoint(val: str) -> Tuple[str, str]:
+    """Acepta 'lat,lon', 'lon,lat', 'POINT (lon lat)' → devuelve (lat, lon) si se puede."""
+    s = str(val or "").strip()
+    if not s:
+        return "", ""
+    # POINT (lon lat)
+    m = re.match(r"point\s*\(\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s*\)", s, flags=re.I)
     if m:
-        return int(m.group(1)), int(m.group(2) or 0)
-    if sv.isdigit():
-        hh = int(sv); 
-        if 0 <= hh < 24: return hh, 0
-    try:
-        dt = dtparser.parse(sv, dayfirst=True, fuzzy=True)
-        return dt.hour, dt.minute
-    except Exception:
+        lon, lat = m.group(1), m.group(2)
+        return lat, lon
+    # lat,lon o lon,lat (heurística: lat ~ 40.x en Madrid)
+    if "," in s:
+        a, b = s.split(",", 1)
+        a, b = a.strip(), b.strip()
+        try:
+            fa, fb = float(a), float(b)
+            if 39 <= fa <= 41:   # parece lat
+                return a, b
+            if 39 <= fb <= 41:   # b parece lat → swap
+                return b, a
+        except Exception:
+            pass
+    return "", ""
+
+# ============= Mapeo → contrato común =============
+def build_contract(df: pd.DataFrame, source_url: str) -> pd.DataFrame:
+    """Mapea columnas de emergencias a contrato común con normalización y mapeo de distrito."""
+    if df is None or df.empty:
+        return pd.DataFrame(columns=CONTRACT_COLS)
+
+    # Normaliza nombres de columnas
+    df = normalize_cols_df(df)
+    cols_low = {str(c).lower(): c for c in df.columns}
+
+    # Candidatos semánticos
+    type_keys = ["tipo","incidente","servicio","categoria","subcategoria","tipo_servicio","tiposervicio"]
+    dcode_keys = ["cod_distrito","codigo_distrito","distrito_codigo","cdistrito","coddistrito","district_code"]
+    dname_keys = ["distrito","nombre_distrito","distrito_nombre","district","district_name"]
+    lat_keys = ["lat","latitud"]
+    lon_keys = ["lon","longitud","lng","long"]
+    geopoint_keys = ["geo_point_2d","geopoint","coordenadas","coordinates","geom","geometry"]
+    location_keys = [
+        "direccion","dirección","ubicacion","ubicación","lugar","punto","domicilio",
+        "via_publica","via","vía","carretera","tramo","cruce","localizacion","localización",
+        "street","road","address"
+    ]
+    severity_keys = ["prioridad","gravedad","nivel","rating","severidad"]
+
+    def pick(keys):
+        for k in keys:
+            if k in cols_low:
+                return cols_low[k]
         return None
 
-def row_matches_filters(
-    row: pd.Series,
-    target_date: Optional[date_cls],
-    hour_mm: Optional[Tuple[int, int]],
-    location: Optional[str],
-    df_cols: List[str],
-    months_back: int
-) -> bool:
-    # -------- Fecha / Hora --------
-    if target_date or hour_mm:
-        match_time = False
+    type_col = pick(type_keys)
+    dcode_col = pick(dcode_keys)
+    dname_col = pick(dname_keys)
+    lat_col = pick(lat_keys)
+    lon_col = pick(lon_keys)
+    geop_col = pick(geopoint_keys)
 
-        for c in df_cols:
-            lc = str(c).lower()
-            if any(k in lc for k in ["fecha_hora","fechahora","datetime","timestamp","fecha","date","hora","time"]):
-                # 1) Intentar parsear como timestamp/fecha
-                ts = pd.to_datetime(row[c], errors="coerce", dayfirst=True)
-                if pd.notna(ts):
-                    # fecha dentro de ventana
-                    ok_date = in_date_window(ts.date(), target_date, months_back)
-                    # hora exacta (si la pide el usuario)
-                    if hour_mm:
-                        hh, mm = hour_mm
-                        ok_hour = (ts.hour == hh and ts.minute == mm) or (ts.hour == hh)
-                    else:
-                        ok_hour = True
+    out_rows = []
+    df_cols = list(df.columns)
+    for _, row in df.iterrows():
+        # Fecha/hora
+        date_str, time_str, dt_str = extract_event_datetime_cols(row, df_cols)
 
-                    if ok_date and ok_hour:
-                        match_time = True
-                        break
-                else:
-                    # 2) Si la columna parece ser solo "hora", permitir match de hora sin fecha explícita
-                    if hour_mm:
-                        hhmm = to_hour_minute(row[c])
-                        if hhmm:
-                            hh, mm = hour_mm
-                            ok_hour = (hhmm[0] == hh and hhmm[1] == mm) or (hhmm[0] == hh)
-                            # Sin fecha en esa celda: si hay target_date, podría estar en otra columna; seguimos buscando.
-                            if ok_hour and target_date is None:
-                                match_time = True
-                                break
+        # Lat/Lon (usa geopoint si existe)
+        lat_val, lon_val = "", ""
+        if geop_col:
+            l1, l2 = split_geopoint(row.get(geop_col, ""))
+            lat_val, lon_val = l1, l2
+        if not lat_val and lat_col:
+            lat_val = str(row.get(lat_col, "")).strip()
+        if not lon_val and lon_col:
+            lon_val = str(row.get(lon_col, "")).strip()
 
-        if not match_time:
-            return False
+        # Tipo de evento
+        ev_type = str(row.get(type_col, "")).strip() if type_col else "emergencia"
 
-        # Si el usuario dio fecha pero la fecha NO apareció en ninguna columna timestamp explícita,
-        # intentamos reconstruir fecha desde otras columnas posibles (year/month/day en texto).
-        if target_date:
-            any_date_seen = False
-            for c in df_cols:
-                if "fecha" in str(c).lower() or "date" in str(c).lower():
-                    ts = pd.to_datetime(row[c], errors="coerce", dayfirst=True)
-                    if pd.notna(ts):
-                        any_date_seen = True
-                        if not in_date_window(ts.date(), target_date, months_back):
-                            return False
-                        break
-            # Si no vimos fecha en ninguna columna, no descartamos solo por no encontrar campo.
+        # Distrito (intenta completar nombre↔código)
+        dcode = str(row.get(dcode_col, "")).strip() if dcode_col else ""
+        dname = str(row.get(dname_col, "")).strip() if dname_col else ""
 
-    # -------- Ubicación --------
-    if location:
-        target = normalize_text(location)
-        loc_cols = [c for c in df_cols if any(k in str(c).lower() for k in
-                   ["calle","vía","via","direccion","dirección","ubicacion","ubicación",
-                    "lugar","punto","domicilio","via_publica","carretera","tramo","cruce",
-                    "street","road","address","addr","localizacion","localización",
-                    "distrito","barrio","municipio","localidad","seccion","sección","zona"])]
-        if loc_cols:
-            found_loc = False
-            for c in loc_cols:
-                try:
-                    val = normalize_text(str(row.get(c, "")))
-                    if target and target in val:
-                        found_loc = True
-                        break
-                except Exception:
-                    pass
-            if not found_loc:
-                return False
+        dname_norm = nfd_lower(dname)
+        if not dcode and dname_norm:
+            dcode = DISTRICT_NAME_TO_CODE.get(dname_norm, "")
+        if not dname and dcode:
+            dname = CODE_TO_DISTRICT_NAME.get(dcode.zfill(2), dname)
 
-    return True
+        if dcode:
+            dcode = re.sub(r"\D", "", dcode).zfill(2)
 
-# ---------- Proceso por ficha (conservando filas completas) ----------
-def process_page_filtered_full(page_url: str, target_date: Optional[date_cls], hour_mm: Optional[Tuple[int,int]], location: Optional[str], months_back: int) -> pd.DataFrame:
+        # Location
+        location_val = ""
+        for lk in location_keys:
+            c = cols_low.get(lk)
+            if c:
+                v = str(row.get(c, "")).strip()
+                if v:
+                    location_val = v
+                    break
+
+        # Severity
+        sev_val = ""
+        for sk in severity_keys:
+            c = cols_low.get(sk)
+            if c:
+                v = str(row.get(c, "")).strip()
+                if v:
+                    sev_val = v
+                    break
+
+        out_rows.append({
+            "dataset": "emergencias",
+            "event_type": ev_type,
+            "date": date_str,
+            "time": time_str,
+            "datetime": dt_str,
+            "district_code": dcode,
+            "district_name": dname,
+            "lat": lat_val,
+            "lon": lon_val,
+            "location": location_val,
+            "severity": sev_val,
+            "value": "",      # normalmente vacío
+            "units": "",      # normalmente vacío
+            "source_id": source_url
+        })
+
+    out = pd.DataFrame(out_rows)
+    for c in CONTRACT_COLS:
+        if c not in out.columns:
+            out[c] = ""
+    return out[CONTRACT_COLS]
+
+# ============= Procesado por ficha =============
+def process_page(page_url: str) -> pd.DataFrame:
+    """Descarga, filtra por ventana y mapea a contrato."""
     print(f"\n[Procesando] {page_url}")
-    # HTML de la ficha
     try:
         html = fetch_html(page_url)
     except Exception as e:
@@ -350,133 +422,111 @@ def process_page_filtered_full(page_url: str, target_date: Optional[date_cls], h
         return pd.DataFrame()
     soup = make_soup(html)
 
-    # URL de datos validada
+    # URL de datos
     data_url = None
     for key, forced in OVERRIDES.items():
         if key in page_url:
-            data_url = forced
-            break
+            data_url = forced; break
     if not data_url:
         data_url = find_valid_data_url_from_page(page_url, soup)
     if not data_url:
         print("  [Aviso] sin URL CSV/JSON válida")
         return pd.DataFrame()
 
-    # Carga tabla
+    # Carga
     df = load_remote_table(data_url)
     if df is None or df.empty:
         print("  [Aviso] descarga vacía")
         return pd.DataFrame()
 
-    # Descarta agregados sin fecha/hora de evento
+    # Descarta agregados
     if not is_event_level(df):
         print("  [Skip] dataset agregado (sin fecha/hora por evento)")
         return pd.DataFrame()
 
-    # Filtro fila a fila conservando todas las columnas
+    # Normaliza columnas para el filtro
+    df = normalize_cols_df(df)
+
+    # Filtro de ventana
     kept = []
     cols = list(df.columns)
     for _, row in df.iterrows():
-        try:
-            if row_matches_filters(row, target_date, hour_mm, location, cols, months_back=months_back):
-                d = row.to_dict()
-                d["__fuente"] = data_url
-                kept.append(d)
-        except Exception:
-            continue
+        date_str, _, dt_str = extract_event_datetime_cols(row, cols)
+        d = None
+        if date_str:
+            try:
+                d = dtparser.parse(date_str, dayfirst=True).date()
+            except Exception:
+                d = None
+        if d is None and dt_str:
+            try:
+                d = dtparser.parse(dt_str, dayfirst=True).date()
+            except Exception:
+                d = None
+        if d and in_date_window(d, END_DATE, MONTHS_BACK_DEFAULT):
+            kept.append(row.to_dict())
 
     if not kept:
-        print("  [OK] 0 filas pasan filtro")
+        print("  [OK] 0 filas dentro de la ventana")
         return pd.DataFrame()
 
-    out = pd.DataFrame(kept)
-    print(f"  [OK] {len(out)} filas pasan filtro (cols={len(out.columns)})")
+    df_kept = pd.DataFrame(kept)
+
+    # Mapear a contrato
+    out = build_contract(df_kept, source_url=data_url)
+
+    # Orden por datetime si existe
+    try:
+        ts = pd.to_datetime(out["datetime"], errors="coerce")
+        out = out.iloc[ts.sort_values().index]
+    except Exception:
+        pass
+
+    print(f"  [OK] {len(out)} filas mapeadas → contrato común")
     return out
 
-# ---------- Main ----------
+# ============= Export con NA (consistente) =============
+def export_contract_csv(df: pd.DataFrame, out_path: Path):
+    """Exporta contrato con separador ';', sin comillas y 'NA' para vacíos."""
+    df2 = df.copy()
+    for c in df2.columns:
+        df2[c] = df2[c].astype(str).str.strip()
+        df2.loc[df2[c] == "", c] = "NA"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    df2.to_csv(out_path, index=False, sep=";", encoding="utf-8-sig", quoting=csv.QUOTE_NONE, escapechar="\\")
+
+# ============= Main =============
 def main():
-    user_date = input("Fecha (YYYY-MM-DD) o Enter para omitir: ").strip()
-    target_date = parse_user_date(user_date)
-    if user_date and target_date is None:
-        print("Fecha inválida. Usa YYYY-MM-DD.")
-        sys.exit(1)
-
-    # margen en meses (por defecto 2)
-    months_back = MONTHS_BACK_DEFAULT
-    user_months = input(f"Margen hacia atrás en meses (Enter={MONTHS_BACK_DEFAULT}): ").strip()
-    if user_months:
-        try:
-            months_back = max(0, int(user_months))
-        except Exception:
-            print("Valor de meses inválido. Usando valor por defecto:", MONTHS_BACK_DEFAULT)
-            months_back = MONTHS_BACK_DEFAULT
-
-    location = input("Vía / Ubicación (calle o distrito/barrio) o Enter para omitir: ").strip() or None
-
-    user_hour = input("Hora (ej: 08, 08:30, 8.5, 8,25) o Enter para omitir: ").strip()
-    try:
-        hour_mm = parse_user_hour(user_hour) if user_hour else None
-        if hour_mm:
-            hh, mm = hour_mm
-            assert 0 <= hh < 24 and 0 <= mm < 60
-    except Exception:
-        print("Hora inválida. Usa 08, 08:30, 8.5, 8,25 …")
-        sys.exit(1)
-
+    print(f"[Ventana] {START_DATE.isoformat()} -> {END_DATE.isoformat()} (meses atrás={MONTHS_BACK_DEFAULT})")
     parts: List[pd.DataFrame] = []
     for url in PAGES:
         try:
-            dfp = process_page_filtered_full(url, target_date, hour_mm, location, months_back)
+            dfp = process_page(url)
             if not dfp.empty:
                 parts.append(dfp)
         except Exception as e:
             print(f"  [Error inesperado] {e}")
 
     if not parts:
-        print("\n[Resultado] 0 filas cumplen los filtros.")
-        # crea CSV vacío con BOM y una columna de referencia
-        pd.DataFrame(columns=["__fuente"]).to_csv(OUT_FILE, index=False, encoding="utf-8-sig", sep=";")
+        print("\n[Resultado] 0 filas en todas las fichas.")
+        export_contract_csv(pd.DataFrame(columns=CONTRACT_COLS), OUT_FILE)
         print(f"[OK] Archivo vacío con cabecera: {OUT_FILE.resolve()}")
         return
 
     out = pd.concat(parts, ignore_index=True, sort=False)
+    # Garantiza orden/columnas del contrato
+    for c in CONTRACT_COLS:
+        if c not in out.columns:
+            out[c] = ""
+    out = out[CONTRACT_COLS]
 
-    # Rellenar blancos: NaN y strings vacíos -> "NA"
-    out = out.fillna("NA")
-    for c in out.columns:
-        try:
-            out[c] = out[c].astype(str).replace(r"^\s*$", "NA", regex=True)
-        except Exception:
-            pass
-
-    # Ordenar por fecha/hora si existen columnas compatibles
-    try:
-        # busca mejor columna de fecha/hora compuesta
-        ts_col = None
-        for c in out.columns:
-            if any(k in str(c).lower() for k in ["fecha_hora","fechahora","datetime","timestamp"]):
-                ts_col = c; break
-        if ts_col:
-            ts = pd.to_datetime(out[ts_col], errors="coerce", dayfirst=True)
-        else:
-            # intenta combinar 'fecha' y 'hora' si existieran
-            fecha_col = next((c for c in out.columns if "fecha" in str(c).lower() or "date" in str(c).lower()), None)
-            hora_col  = next((c for c in out.columns if "hora"  in str(c).lower() or "time" in str(c).lower()), None)
-            if fecha_col and hora_col:
-                ts = pd.to_datetime(out[fecha_col] + " " + out[hora_col], errors="coerce", dayfirst=True)
-            elif fecha_col:
-                ts = pd.to_datetime(out[fecha_col], errors="coerce", dayfirst=True)
-            else:
-                ts = None
-        if ts is not None:
-            out = out.iloc[ts.sort_values().index]
-    except Exception:
-        pass
-
-    out.to_csv(OUT_FILE, index=False, encoding="utf-8-sig", sep=";")
+    export_contract_csv(out, OUT_FILE)
     print(f"\n[OK] Guardado: {OUT_FILE.resolve()}")
     print(f"[Filas] {len(out)}  [Columnas] {len(out.columns)}")
-    print(out.head(10))
+    try:
+        print(out.head(10))
+    except Exception:
+        pass
 
 if __name__ == "__main__":
     main()
