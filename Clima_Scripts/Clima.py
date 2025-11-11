@@ -73,7 +73,7 @@ def fetch_json(url: str, headers: Optional[Dict]=None, timeout: int=60, retries:
         try:
             r = requests.get(url, headers=headers or {}, timeout=timeout)
             if r.status_code >= 400:
-                print(f"[{label or 'req'}] HTTP {r.status_code} → {url}")
+                print(f"[{label or 'req'}] HTTP {r.status_code} -> {url}")
                 time.sleep(1.2*i); continue
             try:
                 return r.json()

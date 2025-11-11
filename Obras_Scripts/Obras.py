@@ -344,7 +344,7 @@ def main():
         OUT_UNIFIED, index=False, sep=";", encoding="utf-8-sig",
         quoting=csv.QUOTE_NONE, escapechar="\\", lineterminator="\n"
     )
-    print(f"[OK] Datasheet unificado → {OUT_UNIFIED.resolve()} ({len(obras)} filas)")
+    print(f"[OK] Datasheet unificado -> {OUT_UNIFIED.resolve()} ({len(obras)} filas)")
 
 if __name__ == "__main__":
     main()
