@@ -87,14 +87,18 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def safe_read_csv(p: Path) -> pd.DataFrame:
+    # 1. Intentar primero con el separador oficial del proyecto (CSV_SEP = ";")
     try:
-        return pd.read_csv(p, dtype=str, low_memory=False)
+        return pd.read_csv(p, sep=CSV_SEP, dtype=str, low_memory=False)
     except Exception:
-        for sep in (";", ",", "\t", "|"):
+        # 2. Si falla, intentar con otros separadores comunes
+        for sep in (",", "\t", "|"): # Ya no es necesario probar ";" aquí
             try:
                 return pd.read_csv(p, sep=sep, dtype=str, low_memory=False)
             except Exception:
                 continue
+    # 3. Si todo falla, lanzar el error
+    print(f"ERROR: No se pudo leer el CSV: {p}")
     raise
 
 def _reader_thread(stream, buf: list, status: dict, name: str):
@@ -182,8 +186,7 @@ def coerce_to_contract14(df: pd.DataFrame, dataset_name: str) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame(columns=CONTRACT_14)
     dfn = normalize_columns(df.copy())
-    if "dataset" not in dfn.columns:
-        dfn["dataset"] = dataset_name
+    dfn["dataset"] = dataset_name
     for c in CONTRACT_14:
         if c not in dfn.columns:
             dfn[c] = ""
