@@ -35,12 +35,12 @@ STATION_TO_DISTRICT = {
     "3200": ("08", "Fuencarral-El Pardo"),# Madrid, El Goloso
 }
 
-# Columnas finales solicitadas
+# Columnas finales solicitadas (Insolacion_h eliminada)
 FINAL_COLUMNS = [
     "Dia", "Mes", "Año", "district_code", "district_name", 
     "Temp_Media_°C", "Temp_Max_°C", "Temp_Min_°C", "Hora_Temp_Max", "Hora_Temp_Min", 
     "Precipitacion_mm", "Vel_Viento_Media_m/s", "Racha_Max_m/s", 
-    "Presion_Max_hPa", "Presion_Min_hPa", "Insolacion_h"
+    "Presion_Max_hPa", "Presion_Min_hPa"
 ]
 
 # ===================== Funciones =====================
@@ -63,6 +63,7 @@ def req_aemet(url: str, label: str = None) -> dict:
     return {}
 
 def parse_record(record: dict, station_id: str) -> dict:
+    # Se mantiene "NA" para distritos no mapeados, ya que 0 no es apropiado
     district_code, district_name = STATION_TO_DISTRICT.get(station_id, ("NA", "NA"))
     
     # Extraer y formatear fecha
@@ -73,7 +74,7 @@ def parse_record(record: dict, station_id: str) -> dict:
         mes = dt.month
         anio = dt.year
     except ValueError:
-        dia, mes, anio = "NA", "NA", "NA"
+        dia, mes, anio = 0, 0, 0 # Cambiado de "NA" a 0
 
     return {
         "Dia": dia,
@@ -81,17 +82,18 @@ def parse_record(record: dict, station_id: str) -> dict:
         "Año": anio,
         "district_code": district_code,
         "district_name": district_name,
-        "Temp_Media_°C": record.get("tmed", "NA").replace(",","."),
-        "Temp_Max_°C": record.get("tmax", "NA").replace(",","."),
-        "Temp_Min_°C": record.get("tmin", "NA").replace(",","."),
-        "Hora_Temp_Max": record.get("horatmax", "NA"),
-        "Hora_Temp_Min": record.get("horatmin", "NA"),
-        "Precipitacion_mm": record.get("prec", "NA").replace(",","."),
-        "Vel_Viento_Media_m/s": record.get("velmedia", "NA").replace(",","."),
-        "Racha_Max_m/s": record.get("racha", "NA").replace(",","."),
-        "Presion_Max_hPa": record.get("presMax", "NA").replace(",","."),
-        "Presion_Min_hPa": record.get("presMin", "NA").replace(",","."),
-        "Insolacion_h": record.get("insolac", "NA").replace(",","."),
+        # Cambiado el default de "NA" a "0"
+        "Temp_Media_°C": record.get("tmed", "0").replace(",","."),
+        "Temp_Max_°C": record.get("tmax", "0").replace(",","."),
+        "Temp_Min_°C": record.get("tmin", "0").replace(",","."),
+        "Hora_Temp_Max": record.get("horatmax", "0"),
+        "Hora_Temp_Min": record.get("horatmin", "0"),
+        "Precipitacion_mm": record.get("prec", "0").replace(",","."),
+        "Vel_Viento_Media_m/s": record.get("velmedia", "0").replace(",","."),
+        "Racha_Max_m/s": record.get("racha", "0").replace(",","."),
+        "Presion_Max_hPa": record.get("presMax", "0").replace(",","."),
+        "Presion_Min_hPa": record.get("presMin", "0").replace(",","."),
+        # "Insolacion_h" eliminada
         "date_iso_debug": date_str # Para depuración
     }
 
@@ -123,7 +125,7 @@ def main():
         # Asegurar que solo tengamos las columnas finales y en el orden correcto
         for col in FINAL_COLUMNS:
             if col not in df.columns:
-                df[col] = "NA"
+                df[col] = "0" # Rellenar con "0" si alguna columna faltase por completo
         df = df[FINAL_COLUMNS]
 
     df.to_csv(

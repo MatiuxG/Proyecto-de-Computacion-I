@@ -1,6 +1,3 @@
-# -*- coding: utf-8 -*-
-# Code in English, comments in Spanish
-
 import re
 import io
 import csv
@@ -38,10 +35,10 @@ STATIONS_CATALOG_CANDIDATES = [
     "https://datos.madrid.es/egob/catalogo/201210-0-red-vigilancia-calidad-aire-estaciones.json",
 ]
 
-OUTPUT_DIR = Path("./CalidadAire_Scripts/Resultados")
+OUTPUT_DIR = Path("CalidadAire_Scripts\CalidadAire_Scripts\Resultados")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-OUT_FILE = OUTPUT_DIR / "datasheet_calidad_aire.csv"
-EXTRAS_FILE = OUTPUT_DIR / "extras_calidad_aire.csv"
+OUT_FILE = OUTPUT_DIR / "datasheet_calidad_aire_agregado.csv" # --- NUEVO NOMBRE DE ARCHIVO ---
+# EXTRAS_FILE = OUTPUT_DIR / "extras_calidad_aire.csv" # Ya no se usa
 DEBUG_HEAD = OUTPUT_DIR / "debug_calidad_aire_head.csv"
 
 # CSV local opcional (si falla internet / formato raro)
@@ -58,18 +55,25 @@ TODAY = datetime.today().date()
 DEFAULT_START = TODAY - relativedelta(months=2)
 DEFAULT_END = TODAY
 
-# 14 columnas del contrato
-CONTRACT_BASE = [
-    "dataset","event_type","date","time","datetime",
-    "district_code","district_name","lat","lon","location",
-    "severity","value","units","source_id",
+# --- NUEVAS COLUMNAS SOLICITADAS (MODIFICADAS) ---
+NEW_COLUMNS = [
+    "dia", "mes", "año", "numero de distrito", "nombre del distrito",
+    "Oxidosde nitrogeno", "Particulas"
 ]
-
-# Extras (guardamos aparte)
-AIR_FIELDS = ["pollutant","aq_value","aq_unit","station_code","station_name","__source_url"]
+# --- FIN NUEVAS COLUMNAS ---
 
 # MAGNITUD → contaminante conocido
-MAGNITUD_MAP = {1:"so2", 6:"co", 7:"no", 8:"no2", 9:"o3", 10:"pm10", 12:"pm25"}
+# (Mantenemos los códigos necesarios para las nuevas columnas)
+MAGNITUD_MAP = {
+    # 6:"co",   # Monóxido de Carbono (ELIMINADO)
+    7:"no",   # Óxido de Nitrógeno
+    8:"no2",  # Dióxido de Nitrógeno
+    10:"pm10", # Partículas < 10 µm
+    12:"pm25", # Partículas < 2.5 µm
+    # --- Otros contaminantes (ignorados en el nuevo datasheet) ---
+    1:"so2",
+    9:"o3",
+}
 OPEN_DATA_UNIT = {
     "so2":"µg/m³","co":"mg/m³","no":"µg/m³","no2":"µg/m³","o3":"µg/m³","pm10":"µg/m³","pm25":"µg/m³"
 }
@@ -419,54 +423,99 @@ def filter_window_daily(daily: pd.DataFrame, start_date: date_cls, end_date: dat
     mask = daily["fecha"].between(start_date, end_date)
     return daily[mask].copy()
 
-def build_contract(df_daily: pd.DataFrame, station_lookup: Dict[str, Dict[str,str]]) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    if df_daily.empty:
-        return (pd.DataFrame(columns=CONTRACT_BASE),
-                pd.DataFrame(columns=AIR_FIELDS))
+# --- NUEVA FUNCIÓN DE CONSTRUCCIÓN DE DATASHEET ---
 
-    # Enriquecer con distrito/coords usando station_code
-    def enrich(row):
-        sid = (row.get("station_code") or "").strip()
-        meta = station_lookup.get(sid, {})
+def build_custom_datasheet(df_daily: pd.DataFrame, station_lookup: Dict[str, Dict[str,str]]) -> pd.DataFrame:
+    """
+    Construye el datasheet personalizado agregado por distrito y fecha.
+    """
+    if df_daily.empty:
+        return pd.DataFrame(columns=NEW_COLUMNS)
+
+    # 1. Enriquecer con distrito
+    def get_district_info(station_code):
+        meta = station_lookup.get(str(station_code).strip(), {})
         return pd.Series({
-            "district_code": meta.get("district_code",""),
-            "district_name": meta.get("district_name",""),
-            "lat": meta.get("lat",""),
-            "lon": meta.get("lon",""),
-            "location": meta.get("name","") or row.get("station_name","")
+            "district_code": meta.get("district_code", ""),
+            "district_name": meta.get("district_name", "")
         })
 
-    enrich_df = df_daily.apply(enrich, axis=1)
+    district_info = df_daily["station_code"].apply(get_district_info)
+    df_enriched = pd.concat([df_daily, district_info], axis=1)
 
-    out = pd.DataFrame()
-    out["dataset"] = "calidad_aire"
-    out["event_type"] = df_daily.get("pollutant", "medicion").fillna("medicion")
-    out["date"] = pd.to_datetime(df_daily["fecha"], errors="coerce").dt.strftime("%Y-%m-%d")
-    out["time"] = ""
-    out["datetime"] = ""
-    out["district_code"] = enrich_df["district_code"]
-    out["district_name"] = enrich_df["district_name"]
-    out["lat"] = enrich_df["lat"]
-    out["lon"] = enrich_df["lon"]
-    out["location"] = enrich_df["location"].where(enrich_df["location"].str.len() > 0, df_daily.get("station_name",""))
-    out["severity"] = ""
-    out["value"] = pd.to_numeric(df_daily.get("aq_value", pd.Series(dtype=float)), errors="coerce")
-    out["units"] = df_daily.get("aq_unit", "NA")
-    out["source_id"] = df_daily.get("__source_url", "")
+    # 2. Filtrar solo los contaminantes relevantes y distritos conocidos
+    contaminantes_necesarios = ['no', 'no2', 'pm10', 'pm25'] # MODIFICADO: Se quitó 'co'
+    df_filtered = df_enriched[
+        df_enriched['pollutant'].isin(contaminantes_necesarios) &
+        (df_enriched['district_code'] != "") &
+        (df_enriched['district_code'] != "NA")
+    ].copy()
 
-    # Garantiza contrato y relleno NA
-    for col in CONTRACT_BASE:
-        if col not in out.columns:
-            out[col] = ""
-    out = out[CONTRACT_BASE]
-    out = out.fillna("NA").replace(r"^\s*$", "NA", regex=True)
+    if df_filtered.empty:
+        print("  [Aviso] No se encontraron datos para los contaminantes o distritos solicitados.")
+        return pd.DataFrame(columns=NEW_COLUMNS)
 
-    # Extras
-    extras = pd.DataFrame()
-    for c in AIR_FIELDS:
-        extras[c] = df_daily.get(c, "NA")
-    extras = extras.fillna("NA").replace(r"^\s*$", "NA", regex=True)
-    return out, extras
+    # 3. Pivotar por estación (para tener co, no, no2, etc. como columnas)
+    # Esto maneja el caso de que una estación no mida todos los contaminantes
+    df_pivot_station = df_filtered.pivot_table(
+        index=['fecha', 'district_code', 'district_name', 'station_code'],
+        columns='pollutant',
+        values='aq_value'
+    ).reset_index()
+
+    # 4. Agregar por distrito (promedio de las estaciones de ese distrito)
+    # Agrupamos por fecha, district_code y district_name y calculamos la media
+    df_agg_district = df_pivot_station.groupby(
+        ['fecha', 'district_code', 'district_name']
+    ).mean(numeric_only=True).reset_index()
+
+    # 5. Construir columnas finales
+    df_final = pd.DataFrame()
+    df_final['fecha_dt'] = pd.to_datetime(df_agg_district['fecha'])
+    df_final['dia'] = df_final['fecha_dt'].dt.day
+    df_final['mes'] = df_final['fecha_dt'].dt.month
+    df_final['año'] = df_final['fecha_dt'].dt.year
+    df_final['numero de distrito'] = df_agg_district['district_code']
+    df_final['nombre del distrito'] = df_agg_district['district_name']
+
+    # Funciones 'sum' con manejo de NaNs (si falta NO o NO2, usa el que haya)
+    # .sum(skipna=True, min_count=1) -> si ambos son NaN, da NaN (se convertirá en NA).
+    # Si uno existe, da ese valor. Si ambos existen, los suma.
+
+    # Oxidosde nitrogeno (NO + NO2)
+    cols_no_nox = [c for c in ['no', 'no2'] if c in df_agg_district.columns]
+    if not cols_no_nox:
+        df_final['Oxidosde nitrogeno'] = pd.NA
+    else:
+        # Sumamos NO y NO2 para obtener el total de Óxidos de Nitrógeno
+        df_final['Oxidosde nitrogeno'] = df_agg_district[cols_no_nox].sum(axis=1, skipna=True, min_count=1)
+
+    # Monoxido de carbono (CO) - ELIMINADO
+    # df_final['Monoxido de carbono'] = df_agg_district.get('co', pd.NA)
+
+    # Particulas (PM10 + PM25)
+    cols_pm = [c for c in ['pm10', 'pm25'] if c in df_agg_district.columns]
+    if not cols_pm:
+        df_final['Particulas'] = pd.NA
+    else:
+        # Sumamos PM10 y PM25 para el total de Partículas
+        df_final['Particulas'] = df_agg_district[cols_pm].sum(axis=1, skipna=True, min_count=1)
+
+    # Hidrocarburos no está en los datos de origen mapeados - ELIMINADO
+    # df_final['Hidrocarburos'] = pd.NA
+
+    # Reordenar y rellenar NAs
+    # Nos aseguramos de que solo estén las columnas pedidas
+    df_out = pd.DataFrame()
+    for col in NEW_COLUMNS:
+        df_out[col] = df_final.get(col, pd.NA)
+
+    # Rellenamos cualquier NaN/NaT que quede con 0 (MODIFICADO)
+    df_out = df_out.fillna(0)
+
+    return df_out.sort_values(by=['año', 'mes', 'dia', 'numero de distrito']).reset_index(drop=True)
+
+# --- FIN NUEVA FUNCIÓN ---
 
 def main():
     start_date = DEFAULT_START
@@ -489,7 +538,8 @@ def main():
 
     if not parts:
         print("\n[Resultado] Sin filas en la ventana.")
-        pd.DataFrame(columns=CONTRACT_BASE).to_csv(
+        # MODIFICADO: Usar nuevas columnas para el archivo vacío
+        pd.DataFrame(columns=NEW_COLUMNS).to_csv(
             OUT_FILE, index=False, sep=";", encoding="utf-8-sig",
             quoting=csv.QUOTE_NONE, escapechar="\\", lineterminator="\n"
         )
@@ -498,36 +548,20 @@ def main():
 
     daily = pd.concat(parts, ignore_index=True, sort=False)
 
-    # 3) Construir contrato + extras
-    datasheet, extras = build_contract(daily, station_lookup)
+    # 3) Construir datasheet personalizado
+    # MODIFICADO: Llamar a la nueva función
+    datasheet = build_custom_datasheet(daily, station_lookup)
 
     # 4) Guardado
     datasheet.to_csv(
         OUT_FILE, index=False, sep=";", encoding="utf-8-sig",
         quoting=csv.QUOTE_NONE, escapechar="\\", lineterminator="\n"
     )
-    if not extras.empty:
-        extras.to_csv(
-            EXTRAS_FILE, index=False, sep=";", encoding="utf-8-sig",
-            quoting=csv.QUOTE_NONE, escapechar="\\", lineterminator="\n"
-        )
-
-    # Diagnóstico: estaciones sin distrito
-    if "district_code" in datasheet.columns:
-        missing = datasheet["district_code"].isin(["NA",""])
-        if missing.any():
-            problematic = (daily.loc[missing, ["station_code","station_name"]]
-                           .drop_duplicates()
-                           .sort_values(by="station_code"))
-            print("\n[Diag] Estaciones sin mapeo de distrito (añade al fallback o CSV local):")
-            try:
-                print(problematic.to_string(index=False))
-            except Exception:
-                print(problematic.head(20))
+    
+    # MODIFICADO: Eliminada la sección de guardado de "extras"
+    # MODIFICADO: Eliminada la sección de diagnóstico (ya no aplica igual)
 
     print(f"\n[OK] Datasheet escrito: {OUT_FILE.resolve()}")
-    if not extras.empty:
-        print(f"[OK] Extras escritos: {EXTRAS_FILE.resolve()}")
     print(f"[Filas] {len(datasheet)}")
 
 if __name__ == "__main__":
