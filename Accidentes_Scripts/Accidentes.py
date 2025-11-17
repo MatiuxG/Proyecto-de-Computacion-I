@@ -20,24 +20,20 @@ import xml.etree.ElementTree as ET
 # Configuración
 # ================================
 
-# Páginas de catálogo a escanear (puedes ampliar esta lista si lo necesitas)
+# --- MODIFICADO ---
+# Se eliminan las fuentes de la Comunidad de Madrid para centrarnos solo
+# en el Ayuntamiento, que tiene el detalle de 'lugar_accidente' (calle).
 DATASET_PAGES = [
     "https://datos.madrid.es/portal/site/egob/menuitem.c05c1f754a33a9fbe4b2e4b284f1a5a0/?vgnextoid=7c2843010d9c3610VgnVCM2000001f4a900aRCRD&vgnextchannel=374512b9ace9f310VgnVCM100000171f5a0aRCRD&vgnextfmt=default",
     "https://datos.madrid.es/portal/site/egob/menuitem.c05c1f754a33a9fbe4b2e4b284f1a5a0/?vgnextoid=40085fb0e70b7410VgnVCM2000000c205a0aRCRD&vgnextchannel=374512b9ace9f310VgnVCM100000171f5a0aRCRD&vgnextfmt=default",
-    # Catálogo CAM (forzamos URLs reales abajo)
-    "https://datos.comunidad.madrid/catalogos/#/dataset/1908061?view=info",
 ]
 
-# Overrides para el dataset de CAM (cuando el catálogo expone RDF o visor)
-HARDCODED_DOWNLOADS: Dict[str, List[str]] = {
-    "comunidad.madrid/catalogos/#/dataset/1908061": [
-        "https://datos.comunidad.madrid/dataset/fb9c5a17-afb0-4e95-a7b1-186e7cacc901/resource/58e39362-fbd1-45f6-865b-91505f6bd199/download/accidentes-de-circulacion-con-victimas-por-ubicacion-y-resultado-del-accidente.csv",
-        "https://datos.comunidad.madrid/dataset/fb9c5a17-afb0-4e95-a7b1-186e7cacc901/resource/69a6b3e0-f711-47c5-aa2d-a87b0f82fd31/download/accidentes-de-circulacion-con-victimas-por-ubicacion-y-resultado-del-accidente.json",
-    ],
-}
+# --- MODIFICADO ---
+# Se eliminan los overrides de la Comunidad de Madrid.
+HARDCODED_DOWNLOADS: Dict[str, List[str]] = {}
 
 # Carpeta de salida (cada script debe escribir su propio datasheet aquí)
-OUTPUT_DIR = Path("./Accidentes_Scripts/Resultados")
+OUTPUT_DIR = Path("Accidentes_Scripts\Accidentes_Scripts\Resultados")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUT_FILE = OUTPUT_DIR / "datasheet_accidentes.csv"
 
@@ -56,16 +52,9 @@ TODAY = datetime.today().date()
 DEFAULT_START = TODAY - relativedelta(months=2)
 DEFAULT_END = TODAY
 
-# Columnas base del contrato común (todas los datasheets deben incluirlas)
-CONTRACT_BASE = [
-    "dataset", "event_type", "date", "time", "datetime",
-    "district_code", "district_name", "lat", "lon", "location",
-    "severity", "value", "units", "source_id",
-]
-
-# Columnas extra (específicas de accidentes) que intentaremos poblar si existen
-EXTRA_ACCIDENTS = [
-    "road", "cause", "num_vehicles", "num_injured", "num_fatalities"
+# Columnas finales deseadas
+FINAL_COLUMNS = [
+    "Dia", "Mes", "Año", "district_code", "district_name", "ubicacion"
 ]
 
 # Mapeo códigos → nombres de distritos del Ayuntamiento de Madrid
@@ -241,8 +230,10 @@ def guess_datetime_cols(df: pd.DataFrame) -> List[str]:
 
 def guess_street_cols(df: pd.DataFrame) -> List[str]:
     """Detecta columnas relacionadas con vía/dirección/ubicación."""
+    # --- MODIFICADO: Añadido 'localizacion' ---
     keys = ["calle","via","vía","direccion","dirección","ubicacion","ubicación","lugar","punto","domicilio",
-            "carretera","tramo","pk","interseccion","intersección","cruce","kilometro","kilómetro","street","road","address","addr"]
+            "carretera","tramo","pk","interseccion","intersección","cruce","kilometro","kilómetro","street","road","address","addr",
+            "lugar_accidente", "localizacion"] # <--- AÑADIDO
     return [c for c in df.columns if any(k in c for k in keys)]
 
 def guess_district_cols(df: pd.DataFrame) -> Tuple[Optional[str], Optional[str]]:
@@ -356,18 +347,16 @@ def process_one(page_url: str, start_date: date_cls, end_date: date_cls) -> pd.D
 # ================================
 
 def build_contract_from_raw(df_raw: pd.DataFrame) -> pd.DataFrame:
-    """Mapea el DataFrame bruto al contrato común + campos útiles de accidentes."""
+    """Mapea el DataFrame bruto a las columnas finales solicitadas."""
     if df_raw.empty:
-        return df_raw
+        return pd.DataFrame(columns=FINAL_COLUMNS)
 
     df = df_raw.copy()
 
-    # 1) Inicializa contrato base
+    # 1) Inicializa DataFrame de salida
     out = pd.DataFrame()
-    out["dataset"] = "accidentes"
-    out["event_type"] = "accidente"
 
-    # 2) Fecha/hora
+    # 2) Fecha/hora -> Dia, Mes, Año
     dt_cols = guess_datetime_cols(df)
     if dt_cols:
         full = None
@@ -378,19 +367,23 @@ def build_contract_from_raw(df_raw: pd.DataFrame) -> pd.DataFrame:
             full = dt_cols[0]
 
         dt_parsed = pd.to_datetime(df[full], errors="coerce", dayfirst=True)
-        out["datetime"] = dt_parsed.dt.strftime("%Y-%m-%d %H:%M:%S")
-        out["date"] = dt_parsed.dt.strftime("%Y-%m-%d")
-        out["time"] = dt_parsed.dt.strftime("%H:%M")
+        out["Dia"] = dt_parsed.dt.day
+        out["Mes"] = dt_parsed.dt.month
+        out["Año"] = dt_parsed.dt.year
 
-        out.loc[out["time"] == "NaT", "time"] = ""
-        out.loc[out["date"] == "NaT", "date"] = ""
-        out.loc[out["datetime"] == "NaT", "datetime"] = ""
     else:
         dcol = next((c for c in df.columns if c in ("fecha","date","dia","día")), None)
-        tcol = next((c for c in df.columns if c in ("hora","time","hr","h_acc","acc_hora")), None)
-        out["date"] = df[dcol].map(as_date) if dcol else ""
-        out["time"] = df[tcol].map(as_time) if tcol else ""
-        out["datetime"] = ""
+        # Si no hay datetime, intentar parsear 'date'
+        if dcol:
+            dt_parsed = pd.to_datetime(df[dcol], errors="coerce", dayfirst=True)
+            out["Dia"] = dt_parsed.dt.day
+            out["Mes"] = dt_parsed.dt.month
+            out["Año"] = dt_parsed.dt.year
+        else:
+            out["Dia"] = pd.Series(dtype='Int64')
+            out["Mes"] = pd.Series(dtype='Int64')
+            out["Año"] = pd.Series(dtype='Int64')
+
 
     # 3) Distrito (código/nombre) con mapeo a nombres
     dcode, dname = guess_district_cols(df)
@@ -419,70 +412,91 @@ def build_contract_from_raw(df_raw: pd.DataFrame) -> pd.DataFrame:
         else:
             out["district_name"] = "NA"
 
-    # 4) Lat/Lon
-    lat_col = next((c for c in df.columns if c in ("lat","latitude","y","latitud")), None)
-    lon_col = next((c for c in df.columns if c in ("lon","longitud","long","x","longitude")), None)
-    out["lat"] = df.get(lat_col, "") if lat_col else ""
-    out["lon"] = df.get(lon_col, "") if lon_col else ""
+    # 4) Ubicación (vía/calle)
+    
+    # --- MODIFICADO: Añadido 'localizacion' a la prioridad ---
+    # Lista de columnas candidatas en orden de prioridad (de más específica a más genérica)
+    priority_keys = [
+        "lugar_accidente", # Suele ser la descripción completa (Ayto. Madrid)
+        "calle",           
+        "via",             
+        "vía",
+        "direccion",
+        "dirección",
+        "localizacion", # <--- AÑADIDO
+        "interseccion",
+        "intersección",
+        "emplazamiento",
+        "ubicacion",
+        "ubicación",
+        "lugar",
+        "domicilio"
+    ]
 
-    # 5) Ubicación (vía/calle)
-    street_cols = guess_street_cols(df)
-    out["location"] = df[street_cols[0]].astype(str) if street_cols else ""
+    street_col_found = None
+    
+    # Iterar por prioridad
+    for key in priority_keys:
+        # df.columns ya están normalizados (minúsculas, sin acentos)
+        for col_name in df.columns:
+            if key in col_name:
+                # Evitar columnas que solo describen el 'tipo' o 'código'
+                if "tipo" not in col_name and "cod" not in col_name and "codigo" not in col_name:
+                     street_col_found = col_name
+                     break # Encontramos la mejor coincidencia para esta clave
+        if street_col_found:
+            break # Salir del bucle de prioridad
 
-    # 6) Severidad / valor / unidades
+    # Si después de todo no encontramos una columna prioritaria,
+    # usar la lógica original (la primera que encuentre 'guess_street_cols')
+    if not street_col_found:
+        street_cols_generic = guess_street_cols(df)
+        if street_cols_generic:
+            street_col_found = next((c for c in street_cols_generic if "tipo" not in c and "cod" not in c and "codigo" not in c), None)
+            if not street_col_found and street_cols_generic:
+                 street_col_found = street_cols_generic[0]
+    
+    out["ubicacion"] = df.get(street_col_found, "").astype(str) if street_col_found else ""
+
+
+    # 5) Severidad
     sev_candidates = ["gravedad","lesividad","severidad","resultado","resultado_accidente","severity"]
     sev_col = next((c for c in df.columns if c in sev_candidates), None)
-    out["severity"] = df.get(sev_col, "") if sev_col else ""
-    out["value"] = "NA"   # Plantilla: 'NA' cuando no hay métrica
-    out["units"] = "NA"
+    out["severidad"] = df.get(sev_col, "") if sev_col else ""
 
-    # 7) ID origen
-    id_candidates = ["id","codigo","cod_accidente","id_accidente","expediente","num_exp","codigo_accidente"]
+    # 6) ID origen
+    id_candidates = ["id","codigo","cod_accidente","id_accidente","expediente","num_exp","codigo_accidente",
+                     "num_expediente"]
     id_col = next((c for c in df.columns if c in id_candidates), None)
-    out["source_id"] = df.get(id_col, "") if id_col else df.get("__download__", "")
+    out["ID_origen"] = df.get(id_col, "") if id_col else df.get("__download__", "")
 
-    # 8) Extras de accidentes (opcionales)
-    road_candidates = ["carretera","via","tramo","pk","road","calle","vía"]
+    # 7) Extras de accidentes (opcionales)
     cause_candidates = ["causa","causa_accidente","motivo","concurrencia","tipo_accidente","descripcion"]
-    nv_candidates = ["n_vehiculos","num_vehiculos","nvehiculos","vehiculos_implicados","vehiculos"]
-    ni_candidates = ["n_heridos","num_heridos","heridos","lesionados","n_lesionados"]
+    nv_candidates = ["n_vehiculos","num_vehiculos","nvehiculos","vehiculos_implicados","vehiculos",
+                     "no_vehiculos_implicados"]
+    ni_candidates = ["n_heridos","num_heridos","heridos","lesionados","n_lesionados",
+                     "no_victimas"]
     nf_candidates = ["n_fallecidos","num_fallecidos","fallecidos","muertos","n_muertos"]
 
     def pick_first(cols: List[str]) -> Optional[str]:
         return next((c for c in df.columns if c in cols), None)
 
-    road_col = pick_first(road_candidates)
     cause_col = pick_first(cause_candidates)
     nv = pick_first(nv_candidates)
     ni = pick_first(ni_candidates)
     nf = pick_first(nf_candidates)
 
-    out["road"] = df.get(road_col, "") if road_col else out.get("location", "")
-    out["cause"] = df.get(cause_col, "") if cause_col else ""
-    out["num_vehicles"] = df.get(nv, "") if nv else ""
-    out["num_injured"] = df.get(ni, "") if ni else ""
-    out["num_fatalities"] = df.get(nf, "") if nf else ""
+    out["causa"] = df.get(cause_col, "") if cause_col else ""
+    out["num_vehiculos"] = df.get(nv, "") if nv else ""
+    out["num_heridos"] = df.get(ni, "") if ni else ""
+    out["num_fallecidos"] = df.get(nf, "") if nf else ""
 
-    # 9) Proveniencia (útil para depurar; no es parte del contrato pero lo mantenemos)
+    # 8) Proveniencia (útil para depurar; no es parte del contrato pero lo mantenemos)
     if "__source_page__" in df.columns:
         out["__source_page__"] = df["__source_page__"]
     if "__download__" in df.columns:
         out["__download__"] = df["__download__"]
 
-    # 10) Garantiza columnas del contrato y extras
-    for col in CONTRACT_BASE:
-        if col not in out.columns:
-            out[col] = ""
-    for col in EXTRA_ACCIDENTS:
-        if col not in out.columns:
-            out[col] = ""
-
-    # (Opcional) Si no hay hora real y no hay datetime, dejar vacío para que luego sea 'NA'
-    out.loc[out["time"].isin(["NaT", "00:00"]) & out["datetime"].eq(""), "time"] = ""
-
-    # Orden tentativo (recortaremos al final)
-    ordered = CONTRACT_BASE + EXTRA_ACCIDENTS + [c for c in out.columns if c not in CONTRACT_BASE + EXTRA_ACCIDENTS]
-    out = out[ordered]
     return out
 
 # ================================
@@ -506,11 +520,11 @@ def main():
 
     if not parts:
         print("\n[Resultado] No se encontraron filas en la ventana seleccionada.")
-        # CSV vacío con SOLO las columnas del contrato
-        empty = pd.DataFrame(columns=CONTRACT_BASE)
+        # CSV vacío con SOLO las columnas finales
+        empty = pd.DataFrame(columns=FINAL_COLUMNS)
         empty.to_csv(
             OUT_FILE, index=False, sep=";", encoding="utf-8-sig",
-            quoting=csv.QUOTE_NONE, escapechar="\\", lineterminator="\n"
+            quoting=csv.QUOTE_MINIMAL, lineterminator="\n"
         )
         print(f"[OK] Datasheet vacío escrito: {OUT_FILE.resolve()}")
         return
@@ -518,45 +532,28 @@ def main():
     raw = pd.concat(parts, ignore_index=True, sort=False)
     standardized = build_contract_from_raw(raw)
 
-    # === Plantilla compliance: NA también para strings vacíos/espacios y NaN ===
+    # === Relleno NA y selección final de columnas ===
     standardized = standardized.fillna("NA")
     standardized = standardized.replace(r"^\s*$", "NA", regex=True)
-    for c in CONTRACT_BASE:
-        if c not in standardized.columns:
-            standardized[c] = "NA"
-
-    # Recortar exactamente a las 14 columnas del contrato
-    standardized = standardized[CONTRACT_BASE]
+    
+    # Asegurar que todas las columnas finales existan
+    for col in FINAL_COLUMNS:
+        if col not in standardized.columns:
+            standardized[col] = "NA"
+    
+    # Recortar exactamente a las columnas solicitadas
+    standardized = standardized[FINAL_COLUMNS]
 
     # Guardado final (utf-8-sig recomendado para Excel)
     standardized.to_csv(
         OUT_FILE, index=False, sep=";", encoding="utf-8-sig",
-        quoting=csv.QUOTE_NONE, escapechar="\\", lineterminator="\n"
+        quoting=csv.QUOTE_MINIMAL, lineterminator="\n"
     )
 
     print(f"\n[OK] Datasheet escrito: {OUT_FILE.resolve()}")
     print(f"[Filas] {len(standardized)}")
     print("\n[Preview]")
     print(standardized.head(10))
-
-    # ===== OPCIONAL: Guardar extras en CSV aparte =====
-    # Si quieres conservar columnas extra para análisis internos:
-    full_std = build_contract_from_raw(raw).fillna("NA").replace(r"^\s*$", "NA", regex=True)
-    extras_cols = [c for c in EXTRA_ACCIDENTS if c in full_std.columns]
-    keep_cols = []
-    if extras_cols:
-        keep_cols.extend(extras_cols)
-        for meta in ["__source_page__", "__download__"]:
-            if meta in full_std.columns and meta not in keep_cols:
-                keep_cols.append(meta)
-    if keep_cols:
-        extra_df = full_std[keep_cols].copy()
-        extra_path = OUT_FILE.with_name(OUT_FILE.stem.replace("datasheet_", "extras_") + OUT_FILE.suffix)
-        extra_df.to_csv(
-            extra_path, index=False, sep=";", encoding="utf-8-sig",
-            quoting=csv.QUOTE_NONE, escapechar="\\", lineterminator="\n"
-        )
-        print(f"[OK] Extras guardados en: {extra_path.resolve()}")
 
 if __name__ == "__main__":
     main()

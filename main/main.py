@@ -3,6 +3,7 @@ from pathlib import Path
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
+import numpy as np
 
 # ===================== Runtime env =====================
 PYTHON = sys.executable
@@ -17,13 +18,6 @@ CSV_QUOTING = csv.QUOTE_NONE
 CSV_ESCAPECHAR = "\\"
 CSV_ENCODING = "utf-8-sig"
 CSV_FLOAT_FORMAT = "%.6f"
-
-# Contrato común (14 columnas)
-CONTRACT_14 = [
-    "dataset","event_type","date","time","datetime",
-    "district_code","district_name","lat","lon","location",
-    "severity","value","units","source_id",
-]
 
 # Scripts a ejecutar
 SCRIPT_ENTRY = {
@@ -68,23 +62,6 @@ def ascii_slug(s: str) -> str:
     s = re.sub(r"[^a-z0-9_]+", "_", s)
     s = re.sub(r"_+", "_", s).strip("_")
     return s
-
-def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    rename = {c: ascii_slug(str(c)) for c in df.columns}
-    df = df.rename(columns=rename)
-    synonyms = {
-        "fecha_hora":"fecha","fechahora":"fecha","datetime":"fecha","timestamp":"fecha","date":"fecha","dia":"fecha",
-        "hora_evento":"hora","hora_solicitud":"hora","hr":"hora","time":"hora",
-        "distrito_nombre":"distrito","codigo_distrito":"distrito_codigo",
-        "lat":"latitud","latitude":"latitud","y":"latitud",
-        "lon":"longitud","long":"longitud","x":"longitud",
-        "route_id":"linea","stop_lat":"latitud","stop_lon":"longitud","stop_name":"parada",
-    }
-    for c in list(df.columns):
-        base = synonyms.get(c, c)
-        if base != c and base not in df.columns:
-            df = df.rename(columns={c: base})
-    return df
 
 def safe_read_csv(p: Path) -> pd.DataFrame:
     # 1. Intentar primero con el separador oficial del proyecto (CSV_SEP = ";")
@@ -181,35 +158,239 @@ def discover_expected_csvs() -> dict[str, Path]:
             latest_by_dataset[dataset] = candidates[0]
     return latest_by_dataset
 
-# ===================== Unificación =====================
-def coerce_to_contract14(df: pd.DataFrame, dataset_name: str) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame(columns=CONTRACT_14)
-    dfn = normalize_columns(df.copy())
-    dfn["dataset"] = dataset_name
-    for c in CONTRACT_14:
-        if c not in dfn.columns:
-            dfn[c] = ""
-    dfn = dfn[CONTRACT_14]
-    dfn = dfn.fillna("NA").replace("", "NA")
-    mask_na = dfn["district_name"].str.upper().eq("NA") | dfn["district_name"].eq("")
-    if "location" in dfn.columns:
-        dfn.loc[mask_na, "district_name"] = dfn.loc[mask_na, "location"]
-    return dfn
+# ===================== Unificación Agregada =====================
 
-def build_single_unified(dataset_frames: dict[str, pd.DataFrame]) -> Path:
-    commons = []
-    for name, df in dataset_frames.items():
-        common = coerce_to_contract14(df, dataset_name=name)
-        commons.append(common)
-    df_common = pd.concat(commons, ignore_index=True, sort=False) if commons else pd.DataFrame(columns=CONTRACT_14)
-    df_common.to_csv(
-        DATASHEET_UNIFICADO,
-        index=False, sep=CSV_SEP, encoding=CSV_ENCODING,
-        quoting=CSV_QUOTING, escapechar=CSV_ESCAPECHAR, lineterminator="\n"
-    )
-    print(f"[OK] Datasheet único → {DATASHEET_UNIFICADO} (rows={len(df_common)})")
-    return DATASHEET_UNIFICADO
+# Columnas finales deseadas
+FINAL_COLUMNS = [
+    "Dia", "Mes", "Año", "Codigo de distrito", "Distrito/Estacion",
+    "Temp_Media_°C", "Temp_Max_°C", "Temp_Min_°C", "Hora_Temp_Max", "Hora_Temp_Min",
+    "Precipitacion_mm", "Vel_Viento_Media_m/s", "Racha_Max_m/s",
+    "Presion_Max_hPa", "Presion_Min_hPa", "Insolacion_h",
+    "FUEGOS", "DAÑOS EN CONSTRUCCION", "SALVAMENTOS Y RESCATES", "DAÑOS POR AGUA",
+    "INCIDENTES DIVERSOS", "SALIDAS SIN INTERVENCION", "SERVICIOS VARIOS",
+    "aqi", "aqi_category", "pollutant"
+]
+
+# Columnas de emergencias que queremos pivotar (deben coincidir con `event_type`)
+EMERGENCIA_TYPES = [
+    "FUEGOS", "DAÑOS EN CONSTRUCCION", "SALVAMENTOS Y RESCATES", "DAÑOS POR AGUA",
+    "INCIDENTES DIVERSOS", "SALIDAS SIN INTERVENCION", "SERVICIOS VARIOS"
+]
+
+def normalize_key(s: str) -> str:
+    """Normaliza strings para usarlos como claves de merge (distritos, estaciones)."""
+    # Convertir a string primero para manejar NaN (floats)
+    s = str(s or "").strip().lower()
+    if s == "na" or s == "nan":
+        return ""
+    s = unicodedata.normalize("NFD", s)
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+    return s
+
+def get_aqi_simple(pollutant, value) -> tuple:
+    """Calculadora AQI simplificada (ejemplo)."""
+    try:
+        val = float(str(value).replace(",", "."))
+    except (ValueError, TypeError):
+        return 0, "N/A"
+
+    pol = str(pollutant).lower()
+    
+    # Lógica de ejemplo basada en tu request (o3: 28 -> Buena)
+    # Esto es una simplificación, la escala real es más compleja.
+    if pol == 'o3':
+        if val <= 60: return int(val * (28.0/60.0)), "Buena"
+        if val <= 120: return int(val * 0.8), "Moderada"
+        if val <= 180: return int(val * 0.9), "Mala"
+        return int(val), "Muy Mala"
+    elif pol == 'pm10':
+        if val <= 25: return int(val * 1.5), "Buena"
+        if val <= 50: return int(val * 1.5), "Moderada"
+        if val <= 90: return int(val), "Mala"
+        return int(val), "Muy Mala"
+    elif pol == 'pm25':
+        if val <= 15: return int(val * 2), "Buena"
+        if val <= 30: return int(val * 2), "Moderada"
+        if val <= 55: return int(val), "Mala"
+        return int(val), "Muy Mala"
+    elif pol == 'no2':
+        if val <= 50: return int(val * 0.8), "Buena"
+        if val <= 100: return int(val * 0.8), "Moderada"
+        if val <= 200: return int(val), "Mala"
+        return int(val), "Muy Mala"
+    
+    return int(val), "N/A" # Default para SO2, CO, etc.
+
+
+def build_aggregated_unified(dataset_frames: dict[str, pd.DataFrame]) -> Path:
+    """
+    Construye el nuevo datasheet agregado, fusionando por fecha y distrito/estación.
+    """
+    
+    # --- 1. Preparar cada DataFrame ---
+    
+    all_keys = set()
+    dfs_processed = {}
+    
+    # --- CLIMA ---
+    if "clima" in dataset_frames:
+        df = dataset_frames["clima"].copy()
+        
+        # Crear 'date_iso' desde Dia, Mes, Año para la clave de merge
+        # Asegurarse de que son numéricos antes de crear la fecha
+        df['Dia'] = pd.to_numeric(df['Dia'], errors='coerce')
+        df['Mes'] = pd.to_numeric(df['Mes'], errors='coerce')
+        df['Año'] = pd.to_numeric(df['Año'], errors='coerce')
+        df = df.dropna(subset=['Dia', 'Mes', 'Año']) # Descartar filas sin fecha
+        
+        df["date_iso"] = pd.to_datetime(
+            df['Año'].astype(int).astype(str) + '-' + \
+            df['Mes'].astype(int).astype(str) + '-' + \
+            df['Dia'].astype(int).astype(str),
+            errors='coerce'
+        ).dt.strftime("%Y-%m-%d")
+
+        # El CSV ya tiene 'district_name' y 'district_code'
+        # Usamos 'district_name' para la clave, que es más legible (ej. "retiro")
+        df["key_distrito_estacion"] = df["district_name"].apply(normalize_key)
+        df["key_distrito_codigo"] = df["district_code"].apply(normalize_key).str.zfill(2)
+        
+        # Quedarnos con la primera lectura si hay duplicados por día/estación
+        keys = ["date_iso", "key_distrito_estacion", "key_distrito_codigo"]
+        
+        # Las columnas ya tienen los nombres finales (ej. 'Temp_Media_°C')
+        cols_to_keep = keys + [c for c in FINAL_COLUMNS if c in df.columns]
+        df_clima = df[cols_to_keep].drop_duplicates(subset=keys, keep="first")
+        
+        dfs_processed["clima"] = df_clima
+        all_keys.update(df_clima[keys].apply(tuple, axis=1))
+        print(f"[i] Clima procesado: {df_clima.shape[0]} filas")
+
+    # --- EMERGENCIAS ---
+    if "emergencias" in dataset_frames:
+        df = dataset_frames["emergencias"].copy()
+        df["date_iso"] = pd.to_datetime(df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        df["key_distrito_estacion"] = df["district_name"].apply(normalize_key)
+        df["key_distrito_codigo"] = df["district_code"].apply(normalize_key).str.zfill(2)
+        
+        # Filtrar solo los tipos de evento que queremos contar
+        df["event_type_norm"] = df["event_type"].str.upper().str.strip()
+        df_emerg = df[df["event_type_norm"].isin(EMERGENCIA_TYPES)]
+        
+        # Pivotar: contar eventos por día, distrito y tipo
+        keys = ["date_iso", "key_distrito_estacion", "key_distrito_codigo"]
+        if not df_emerg.empty:
+            df_pivot = df_emerg.groupby(keys + ["event_type_norm"]).size().unstack(fill_value=0)
+            df_pivot = df_pivot.rename_axis(columns=None).reset_index()
+        else:
+            df_pivot = pd.DataFrame(columns=keys + EMERGENCIA_TYPES)
+        
+        dfs_processed["emergencias"] = df_pivot
+        all_keys.update(df_pivot[keys].apply(tuple, axis=1))
+        print(f"[i] Emergencias procesadas: {df_pivot.shape[0]} filas")
+
+    # --- CALIDAD AIRE ---
+    if "calidad_aire" in dataset_frames:
+        df = dataset_frames["calidad_aire"].copy()
+        df["date_iso"] = pd.to_datetime(df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        # Usamos 'district_name' (ej. "Centro") en lugar de 'location' (ej. "Plaza del Carmen")
+        df["key_distrito_estacion"] = df["district_name"].apply(normalize_key)
+        df["key_distrito_codigo"] = df["district_code"].apply(normalize_key).str.zfill(2)
+        
+        # Calcular AQI para cada contaminante
+        aqi_data = df.apply(
+            lambda row: get_aqi_simple(row["event_type"], row["value"]),
+            axis=1,
+            result_type="expand"
+        )
+        df["aqi"] = aqi_data[0]
+        df["aqi_category"] = aqi_data[1]
+        df["pollutant"] = df["event_type"]
+        
+        # Quedarnos con el PEOR (max AQI) por día y estación
+        keys = ["date_iso", "key_distrito_estacion", "key_distrito_codigo"]
+        # Ordenamos por AQI (peor primero) y nos quedamos con el primero de cada grupo
+        df_aqi = df.sort_values("aqi", ascending=False).drop_duplicates(subset=keys, keep="first")
+        
+        cols_to_keep = keys + ["aqi", "aqi_category", "pollutant"]
+        df_aqi = df_aqi[cols_to_keep]
+        
+        dfs_processed["calidad_aire"] = df_aqi
+        all_keys.update(df_aqi[keys].apply(tuple, axis=1))
+        print(f"[i] Calidad Aire procesada: {df_aqi.shape[0]} filas")
+
+    # --- DATOS NO SOLICITADOS ---
+    for k in ["accidentes", "obras", "trafico_historico"]:
+        if k in dataset_frames:
+            print(f"[i] Omitiendo '{k}'. No se solicitaron columnas en la nueva estructura.")
+
+    
+    # --- 2. Crear Base y Fusionar (Merge) ---
+    if not all_keys:
+        print("❌ No se encontraron datos para agregar.")
+        # Devolver un DataFrame vacío con las columnas correctas
+        df_empty = pd.DataFrame(columns=FINAL_COLUMNS)
+        # Asegurar tipos correctos para columnas de emergencia
+        for col in EMERGENCIA_TYPES:
+            if col in df_empty.columns:
+                df_empty[col] = df_empty[col].astype(int)
+        return df_empty
+
+    # Crear la base de todas las combinaciones fecha/distrito encontradas
+    keys = ["date_iso", "key_distrito_estacion", "key_distrito_codigo"]
+    base_df = pd.DataFrame(list(all_keys), columns=keys)
+    base_df = base_df.sort_values(by=["date_iso", "key_distrito_codigo", "key_distrito_estacion"]).reset_index(drop=True)
+    
+    print(f"[i] Base unificada creada: {base_df.shape[0]} filas")
+
+    # Fusionar (merge) todos los dataframes procesados contra la base
+    merged = base_df
+    if "clima" in dfs_processed:
+        merged = merged.merge(dfs_processed["clima"], on=keys, how="left")
+        print(f"[i] Merge con Clima... (filas: {merged.shape[0]})")
+    if "emergencias" in dfs_processed:
+        merged = merged.merge(dfs_processed["emergencias"], on=keys, how="left")
+        print(f"[i] Merge con Emergencias... (filas: {merged.shape[0]})")
+    if "calidad_aire" in dfs_processed:
+        merged = merged.merge(dfs_processed["calidad_aire"], on=keys, how="left")
+        print(f"[i] Merge con Calidad Aire... (filas: {merged.shape[0]})")
+        
+    # --- 3. Limpieza Final ---
+    
+    # Rellenar NaNs
+    # Rellenar contadores de emergencia con 0
+    for col in EMERGENCIA_TYPES:
+        if col in merged.columns:
+            # Corrección: Usar pd.to_numeric para manejar strings y NaNs antes de rellenar
+            merged[col] = pd.to_numeric(merged[col], errors='coerce').fillna(0).astype(int)
+    
+    # Rellenar el resto con "N/A"
+    merged = merged.fillna("N/A")
+
+    # Crear columnas de fecha (si no vienen de clima)
+    if not all(['Dia', 'Mes', 'Año'] in merged.columns):
+        dt = pd.to_datetime(merged["date_iso"], errors="coerce")
+        merged["Dia"] = dt.dt.day.fillna(0).astype(int)
+        merged["Mes"] = dt.dt.month.fillna(0).astype(int)
+        merged["Año"] = dt.dt.year.fillna(0).astype(int)
+    
+    # Renombrar columnas clave
+    merged = merged.rename(columns={
+        "key_distrito_codigo": "Codigo de distrito",
+        "key_distrito_estacion": "Distrito/Estacion"
+    })
+    
+    # Asegurar que todas las columnas finales existan
+    for col in FINAL_COLUMNS:
+        if col not in merged.columns:
+            merged[col] = "N/A" if col not in EMERGENCIA_TYPES else 0
+            
+    # Ordenar y seleccionar columnas finales
+    df_final = merged[FINAL_COLUMNS]
+    
+    print(f"[OK] Datasheet agregado finalizado: {df_final.shape[0]} filas")
+    return df_final
+
 
 # ===================== MAIN =====================
 def main():
@@ -246,7 +427,7 @@ def main():
     for k, v in latest.items():
         print(f"[{k}] CSV: {v}")
 
-    # 3. Cargar y unificar
+    # 3. Cargar y unificar (LÓGICA CAMBIADA)
     frames = {}
     for name, path in latest.items():
         try:
@@ -258,7 +439,18 @@ def main():
         print("❌ No readable datasheets.")
         return
 
-    build_single_unified(frames)
+    # Llamar a la nueva función de agregación
+    df_final = build_aggregated_unified(frames)
+
+    # Guardar el resultado agregado
+    df_final.to_csv(
+        DATASHEET_UNIFICADO,
+        index=False, sep=CSV_SEP, encoding=CSV_ENCODING,
+        quoting=CSV_QUOTING, escapechar=CSV_ESCAPECHAR, 
+        lineterminator="\n", # Corregido (sin '_')
+        float_format=CSV_FLOAT_FORMAT
+    )
+    print(f"[OK] Datasheet agregado → {DATASHEET_UNIFICADO} (rows={len(df_final)})")
 
     print("\n=== DONE ===")
     print(f"Run log: {RUN_LOG}")

@@ -1,279 +1,140 @@
 # -*- coding: utf-8 -*-
-"""
-Clima (AEMET) — Datasheet único normalizado (contrato común)
-- Descarga DIARIOS (últimos 180 días) y MENSUALES (año actual) de la estación Madrid Retiro (3195)
-- Emite un ÚNICO CSV: ./Clima_Scripts/Resultados/datasheet_clima.csv
-- Contrato común: dataset,event_type,date,time,datetime,district_code,district_name,lat,lon,location,severity,value,units,source_id
-- Formato largo por métrica (cada métrica = 1 fila)
-"""
-
-import csv
-import json
-import time
-import requests
-from datetime import datetime, timedelta
+# -*- coding: utf-8 -*-
+import sys, csv, re, json, unicodedata
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from datetime import datetime
+import pandas as pd
+import requests
 
-# ==============================
-# Configuración
-# ==============================
+# ===================== Config =====================
+API_KEY = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJFZGR5ZnJhdGVyMkBnbWFpbC5jb20iLCJqdGkiOiIwZTRmNjVjYy03YTNiLTRjMzUtYjZiNS02YzJkOWM3YmNiZTMiLCJpc3MiOiJBRU1FVCIsImlhdCI6MTc2Mjk3MjI2NywidXNlcklkIjoiMGU0ZjY1Y2MtN2EzYi00YzM1LWI2YjUtNmMyZDljN2JjYmUzIiwicm9sZSI6IiJ9.31mijI-aiAuAuqZjYK9JrsK_1I7Jt3NRdkt0dgplHDg"
+BASE_URL = "https://opendata.aemet.es/opendata/api"
+STATIONS_URL = f"{BASE_URL}/valores/climatologicos/inventarioestaciones/todasestaciones"
+DAILY_URL_TPL = f"{BASE_URL}/valores/climatologicos/diarios/datos/fechaini/{{start_str}}/fechafin/{{end_str}}/estacion/{{station_id}}"
 
-# Estación AEMET (Madrid, Retiro)
-STATION_RETIRO = "3195"
-
-# Enriquecimiento común para joins (alineado con tus otros datasheets)
-DISTRICT_CODE = "03"                               # Retiro
-DISTRICT_NAME = "Retiro"
-LOCATION_NAME = "Madrid — Estación Retiro (AEMET 3195)"
-# Coordenadas opcionales (útiles si luego mapeas). Déjalas vacías si no quieres coords.
-LAT = "40.413"    # opcional
-LON = "-3.683"    # opcional
-
-# Período para DIARIOS (≈ 6 meses)
-DAILY_DAYS = 180
-
-# Año MENSUAL (año actual)
-MONTHLY_YEAR = datetime.today().year
-
-# API Keys (proporcionadas)
-API_KEY_DAILY = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJFZGR5ZnJhdGVyMkBnbWFpbC5jb20iLCJqdGkiOiJhZTQ4Zjg0Zi1hZTMxLTQ5MzgtYTFkNy1jYzlmODhjOTI5MWQiLCJpc3MiOiJBRU1FVCIsImlhdCI6MTc2MTQxNDUxOSwidXNlcklkIjoiYWU0OGY4NGYtYWUzMS00OTM4LWExZDctY2M5Zjg4YzkyOTFkIiwicm9sZSI6IiJ9.z0VMMvrTjwl5MsQuf5YWTdaOtXP7ctRYfasHDfZSE30"
-API_KEY_MONTHLY = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJtYXRlb2dhbDI0MDlAZ21haWwuY29tIiwianRpIjoiOTZjZjYxMjMtN2EzMy00OTkxLWJkMGMtNjNmZDFiYmFkN2E0IiwiaXNzIjoiQUVNRVQiLCJpYXQiOjE3NTkzMTg5NTgsInVzZXJJZCI6Ijk2Y2Y2MTIzLTdhMzMtNDk5MS1iZDBjLTYzZmQxYmJhZDdhNCIsInJvbGUiOiIifQ.pnpqxv1fmE9ZeMVTb4VkvZZF8NuffxQrcSFWpYqBVKg"
-
-# Endpoints AEMET
-AEMET_DAILY_META = "https://opendata.aemet.es/opendata/api/valores/climatologicos/diarios/datos/fechaini/{ini}/fechafin/{fin}/estacion/{est}"
-AEMET_MONTHLY_META = "https://opendata.aemet.es/opendata/api/valores/climatologicos/mensualesanuales/datos/anioini/{anio}/aniofin/{anio}/estacion/{est}"
-
-# Salida ÚNICA
-OUT_DIR = Path("./Clima_Scripts/Resultados")
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+OUT_DIR = Path("Clima_Scripts\Clima_Scripts\Resultados")
 OUT_FILE = OUT_DIR / "datasheet_clima.csv"
 
-# CSV RapidMiner-friendly
+HEADERS = {"accept": "application/json", "api_key": API_KEY}
+ENCODING = "utf-8"
 CSV_SEP = ";"
-CSV_QUOTING = csv.QUOTE_NONE
-CSV_ESCAPE = "\\"
-CSV_ENCODING = "utf-8-sig"
 
-# Contrato común (orden fijo)
-CONTRACT = [
-    "dataset","event_type","date","time","datetime",
-    "district_code","district_name","lat","lon","location",
-    "severity","value","units","source_id",
+# Ventana de fechas (ejemplo: 2 meses atrás)
+try:
+    MONTHS_BACK = int(sys.argv[1]) if len(sys.argv) > 1 else 2
+except Exception:
+    MONTHS_BACK = 2
+
+# Mapa de estaciones de Madrid a Códigos de Distrito
+# (Simplificado, puedes ampliarlo si usas más estaciones)
+STATION_TO_DISTRICT = {
+    "3195": ("03", "Retiro"),           # Madrid, Retiro
+    "3129": ("21", "Barajas"),          # Madrid, Aeropuerto
+    "3194U": ("07", "Chamberí"),        # Madrid, C. Universitaria
+    "3196": ("13", "Puente de Vallecas"),# Madrid, Vallecas
+    "3200": ("08", "Fuencarral-El Pardo"),# Madrid, El Goloso
+}
+
+# Columnas finales solicitadas
+FINAL_COLUMNS = [
+    "Dia", "Mes", "Año", "district_code", "district_name", 
+    "Temp_Media_°C", "Temp_Max_°C", "Temp_Min_°C", "Hora_Temp_Max", "Hora_Temp_Min", 
+    "Precipitacion_mm", "Vel_Viento_Media_m/s", "Racha_Max_m/s", 
+    "Presion_Max_hPa", "Presion_Min_hPa", "Insolacion_h"
 ]
 
-# ==============================
-# Utilidades de red / IO
-# ==============================
+# ===================== Funciones =====================
 
-def fetch_json(url: str, headers: Optional[Dict]=None, timeout: int=60, retries: int=3, label: str="") -> Optional[dict|list]:
-    """Descarga JSON con reintentos (mensajes de diagnóstico mínimos)."""
-    last_exc = None
-    for i in range(1, retries+1):
-        try:
-            r = requests.get(url, headers=headers or {}, timeout=timeout)
-            if r.status_code >= 400:
-                print(f"[{label or 'req'}] HTTP {r.status_code} -> {url}")
-                time.sleep(1.2*i); continue
-            try:
-                return r.json()
-            except json.JSONDecodeError:
-                print(f"[{label or 'req'}] Respuesta no es JSON válido.")
-                time.sleep(1.2*i); continue
-        except requests.exceptions.RequestException as e:
-            last_exc = e
-            print(f"[{label or 'req'}] Error de red: {e}")
-            time.sleep(1.2*i)
-    if last_exc:
-        print(f"[{label or 'req'}] Falló tras reintentos: {last_exc}")
-    return None
+def req_aemet(url: str, label: str = None) -> dict:
+    print(f"[{label or 'req'}] GET {url}")
+    r = requests.get(url, headers=HEADERS, verify=True)
+    r.raise_for_status()
+    data = r.json()
+    
+    if data.get("estado") == 200:
+        r_data = requests.get(data["datos"], headers=HEADERS, verify=True)
+        r_data.raise_for_status()
+        # Decodificar manualmente para manejar acentos
+        return json.loads(r_data.content.decode('iso-8859-1'))
+        
+    print(f"[{label or 'req'}] HTTP {r.status_code} -> {url}")
+    if data.get("descripcion"):
+        print(f"  [Error AEMET] {data['descripcion']}")
+    return {}
 
-def export_contract_csv(rows: List[Dict], out_path: Path):
-    """Escribe el contrato común, vacíos como 'NA', separador ';', sin comillas, UTF-8 BOM."""
-    prepared: List[Dict] = []
-    for row in rows:
-        base = {c: "" for c in CONTRACT}
-        base.update({k: ("" if v is None else v) for k, v in row.items()})
-        prepared.append(base)
-
-    with open(out_path, "w", newline="", encoding=CSV_ENCODING) as f:
-        w = csv.DictWriter(f, fieldnames=CONTRACT, delimiter=CSV_SEP,
-                           quoting=CSV_QUOTING, escapechar=CSV_ESCAPE)
-        w.writeheader()
-        for r in prepared:
-            out = {k: ("NA" if str(v).strip()=="" else v) for k, v in r.items()}
-            w.writerow(out)
-
-# ==============================
-# Transformaciones → contrato
-# ==============================
-
-def daily_to_contract(items: List[Dict], source_url: str) -> List[Dict]:
-    """Convierte DIARIOS AEMET a formato largo por métrica (con distrito Retiro poblado)."""
-    rows: List[Dict] = []
-    if not items:
-        return rows
-
-    unit_map = {
-        "tmed": "°C", "tmax": "°C", "tmin": "°C",
-        "prec": "mm",
-        "velmedia": "m/s", "racha": "m/s",
-        "presmax": "hPa", "presmin": "hPa",
-        "sol": "h",
-    }
-    key_map = {
-        "tmed": "tmed",
-        "tmax": "tmax",
-        "tmin": "tmin",
-        "prec": "prec",
-        "velmedia": "velmedia",
-        "racha": "racha",
-        "presmax": "presMax",
-        "presmin": "presMin",
-        "sol": "sol",
-    }
-
-    for rec in items:
-        date = rec.get("fecha","")
-        for etype, k in key_map.items():
-            val = rec.get(k, "")
-            rows.append({
-                "dataset": "clima",
-                "event_type": etype,
-                "date": date,
-                "time": "",
-                "datetime": "",
-                "district_code": DISTRICT_CODE,
-                "district_name": DISTRICT_NAME,
-                "lat": LAT,
-                "lon": LON,
-                "location": LOCATION_NAME,
-                "severity": "",
-                "value": val,
-                "units": unit_map.get(etype, ""),
-                "source_id": source_url,
-            })
-    return rows
-
-def monthly_to_contract(items: List[Dict], year: int, source_url: str) -> List[Dict]:
-    """Convierte MENSUALES AEMET (un año) a formato largo por métrica (con distrito Retiro poblado)."""
-    rows: List[Dict] = []
-    if not items:
-        return rows
-
-    unit_map = {
-        "tm_mes": "°C", "tm_max": "°C", "tm_min": "°C",
-        "ta_max": "°C", "ta_min": "°C",
-        "hr": "%", "p_mes": "mm", "n_sol": "h",
-    }
-    key_map = {
-        "tm_mes": "tm_mes", "tm_max": "tm_max", "tm_min": "tm_min",
-        "ta_max": "ta_max", "ta_min": "ta_min",
-        "hr": "hr", "p_mes": "p_mes", "n_sol": "n_sol",
-    }
-
-    for rec in items:
-        mtxt = str(rec.get("mes","")).strip()
-        try:
-            m = int(float(mtxt)) if mtxt else 0
-        except Exception:
-            m = 0
-        # Fecha representativa del mes (o promedio anual)
-        if 1 <= m <= 12:
-            date = f"{year:04d}-{m:02d}-01"
-        elif m == 13:
-            date = f"{year:04d}-12-31"
-        else:
-            date = f"{year:04d}-01-01"
-
-        for etype, k in key_map.items():
-            val = rec.get(k, "")
-            rows.append({
-                "dataset": "clima",
-                "event_type": etype,
-                "date": date,
-                "time": "",
-                "datetime": "",
-                "district_code": DISTRICT_CODE,
-                "district_name": DISTRICT_NAME,
-                "lat": LAT,
-                "lon": LON,
-                "location": LOCATION_NAME,
-                "severity": "",
-                "value": val,
-                "units": unit_map.get(etype, ""),
-                "source_id": source_url,
-            })
-    return rows
-
-# ==============================
-# Descargas AEMET
-# ==============================
-
-def download_daily(est: str, days: int) -> Tuple[List[Dict], str]:
-    """Descarga DIARIOS últimos N días; devuelve (json, url_datos)."""
-    end = datetime.today()
-    start = end - timedelta(days=days)
-    ini = start.strftime("%Y-%m-%dT00:00:00UTC")
-    fin = end.strftime("%Y-%m-%dT23:59:59UTC")
-
-    meta_url = AEMET_DAILY_META.format(ini=ini, fin=fin, est=est)
-    meta = fetch_json(meta_url, headers={"api_key": API_KEY_DAILY},
-                      timeout=60, retries=3, label="aemet_diarios_meta")
-    if not meta:
-        return [], meta_url
-    data_url = meta.get("datos","")
-    if not data_url:
-        return [], meta_url
-
-    items = fetch_json(data_url, headers=None, timeout=90, retries=3, label="aemet_diarios_datos")
-    if not items or not isinstance(items, list):
-        return [], data_url
-
+def parse_record(record: dict, station_id: str) -> dict:
+    district_code, district_name = STATION_TO_DISTRICT.get(station_id, ("NA", "NA"))
+    
+    # Extraer y formatear fecha
+    date_str = record.get("fecha", "")
     try:
-        items = sorted(items, key=lambda x: x.get("fecha",""), reverse=True)
-    except Exception:
-        pass
-    return items, data_url
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+        dia = dt.day
+        mes = dt.month
+        anio = dt.year
+    except ValueError:
+        dia, mes, anio = "NA", "NA", "NA"
 
-def download_monthly(est: str, year: int) -> Tuple[List[Dict], str]:
-    """Descarga MENSUALES del año indicado; devuelve (json, url_datos)."""
-    meta_url = AEMET_MONTHLY_META.format(anio=year, est=est)
-    meta = fetch_json(meta_url, headers={"accept":"application/json","api_key": API_KEY_MONTHLY},
-                      timeout=60, retries=3, label="aemet_mensuales_meta")
-    if not meta:
-        return [], meta_url
-    data_url = meta.get("datos","")
-    if not data_url:
-        return [], meta_url
-
-    items = fetch_json(data_url, headers=None, timeout=90, retries=3, label="aemet_mensuales_datos")
-    if not items or not isinstance(items, list):
-        return [], data_url
-    return items, data_url
-
-# ==============================
-# Main (batch, una sola salida)
-# ==============================
+    return {
+        "Dia": dia,
+        "Mes": mes,
+        "Año": anio,
+        "district_code": district_code,
+        "district_name": district_name,
+        "Temp_Media_°C": record.get("tmed", "NA").replace(",","."),
+        "Temp_Max_°C": record.get("tmax", "NA").replace(",","."),
+        "Temp_Min_°C": record.get("tmin", "NA").replace(",","."),
+        "Hora_Temp_Max": record.get("horatmax", "NA"),
+        "Hora_Temp_Min": record.get("horatmin", "NA"),
+        "Precipitacion_mm": record.get("prec", "NA").replace(",","."),
+        "Vel_Viento_Media_m/s": record.get("velmedia", "NA").replace(",","."),
+        "Racha_Max_m/s": record.get("racha", "NA").replace(",","."),
+        "Presion_Max_hPa": record.get("presMax", "NA").replace(",","."),
+        "Presion_Min_hPa": record.get("presMin", "NA").replace(",","."),
+        "Insolacion_h": record.get("insolac", "NA").replace(",","."),
+        "date_iso_debug": date_str # Para depuración
+    }
 
 def main():
-    print("[Clima] Batch start…")
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    
+    end_date = datetime.now()
+    start_date = end_date - pd.DateOffset(months=MONTHS_BACK)
+    start_str = start_date.strftime("%Y-%m-%dT00:00:00UTC")
+    end_str = end_date.strftime("%Y-%m-%dT23:59:59UTC")
+    
+    all_data = []
+    
+    for station_id in STATION_TO_DISTRICT.keys():
+        try:
+            url = DAILY_URL_TPL.format(start_str=start_str, end_str=end_str, station_id=station_id)
+            records = req_aemet(url, label=f"clima-{station_id}")
+            if records:
+                all_data.extend([parse_record(r, station_id) for r in records])
+        except Exception as e:
+            print(f"  [Error] Fallo al procesar estación {station_id}: {e}")
 
-    # Descarga DIARIOS
-    daily_json, daily_src = download_daily(STATION_RETIRO, DAILY_DAYS)
-    daily_rows = daily_to_contract(daily_json, daily_src)
-    print(f"[Clima] Daily rows: {len(daily_rows)}")
+    if not all_data:
+        print("[Aviso] No se obtuvieron datos de clima.")
+        # Guardar CSV vacío con cabeceras si no hay datos
+        df = pd.DataFrame(columns=FINAL_COLUMNS)
+    else:
+        df = pd.DataFrame(all_data)
+        # Asegurar que solo tengamos las columnas finales y en el orden correcto
+        for col in FINAL_COLUMNS:
+            if col not in df.columns:
+                df[col] = "NA"
+        df = df[FINAL_COLUMNS]
 
-    # Descarga MENSUALES
-    monthly_json, monthly_src = download_monthly(STATION_RETIRO, MONTHLY_YEAR)
-    monthly_rows = monthly_to_contract(monthly_json, MONTHLY_YEAR, monthly_src)
-    print(f"[Clima] Monthly rows: {len(monthly_rows)}")
-
-    # Combina y exporta en un ÚNICO CSV
-    combined = daily_rows + monthly_rows
-    export_contract_csv(combined, OUT_FILE)
-    print(f"[Clima] Combined → {OUT_FILE.resolve()} (rows={len(combined)})")
-    print("[Clima] Done.")
+    df.to_csv(
+        OUT_FILE, 
+        sep=CSV_SEP, 
+        encoding=ENCODING, 
+        index=False,
+        quoting=csv.QUOTE_MINIMAL
+    )
+    
+    print(f"[OK] Datasheet de clima escrito -> {OUT_FILE.resolve()} ({len(df)} filas)")
 
 if __name__ == "__main__":
     main()
