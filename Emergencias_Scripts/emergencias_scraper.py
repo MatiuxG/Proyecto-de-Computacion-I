@@ -74,6 +74,27 @@ def load_csv(url):
     except:
         print("  [AVISO] Archivo no es CSV válido → omitido")
         return pd.DataFrame()
+    
+    # Conversión de mes a número (bomberos trae enero, febrero, etc.)
+MES_MAP = {
+    "enero": "01", "febrero": "02", "marzo": "03", "abril": "04",
+    "mayo": "05", "junio": "06", "julio": "07", "agosto": "08",
+    "septiembre": "09", "setiembre": "09", "octubre": "10",
+    "noviembre": "11", "diciembre": "12"
+}
+
+def mes_to_num(value):
+    if not value:
+        return "NA"
+    v = str(value).strip().lower()
+
+    # Si ya es número → normalizar a dos dígitos
+    if v.isdigit():
+        return v.zfill(2)
+
+    # Si es texto → buscar en mapa
+    return MES_MAP.get(v, "NA")
+
 
 # ================================
 # 1. BOMBEROS
@@ -100,7 +121,7 @@ def get_bomberos():
         out.append({
             "dataset": "bomberos",
             "dia": "01",
-            "mes": str(row.get(month_col, "NA")),
+            "mes": mes_to_num(row.get(month_col, "NA")),
             "año": str(row.get(year_col, "NA")),
             "no_distrito": str(row.get(dist_col, "NA")),
             "nombre_distrito": str(row.get(dist_col, "NA")),
@@ -152,7 +173,7 @@ def get_samur():
     for _, row in df.iterrows():
 
         dia = "01"
-        mes = str(row.get(month_col, "NA"))
+        mes = mes_to_num(row.get(month_col, "NA"))
         año = str(row.get(year_col, "NA"))
 
         hora = str(row.get(hora_col, "")).strip()
@@ -265,7 +286,7 @@ def get_sociales():
         out.append({
             "dataset": "servicios_sociales",
             "dia": dia,
-            "mes": mes,
+            "mes": mes_to_num(mes),
             "año": año,
             "no_distrito": str(row.get(dcode_col, "NA")),
             "nombre_distrito": str(row.get(dname_col, "NA")),
