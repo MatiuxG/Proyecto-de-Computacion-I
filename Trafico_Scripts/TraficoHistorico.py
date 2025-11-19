@@ -1,8 +1,14 @@
 import pandas as pd
 
+# ==================== CONFIGURACIÓN DE RUTAS ====================
+RUTA_UBICACIONES = r"Trafico_Scripts\DocumentacionNecesaria\UbicacionEstacionesPermanentesSentidos.csv"
+RUTA_DATOS = r"Trafico_Scripts\DocumentacionNecesaria\DATOS_ESTACIONES_MARZO_2025.csv"
+RUTA_RESULTADO = r"Trafico_Scripts\Trafico_Scripts\Resultados\resultado.csv"  # Cambia esta ruta según necesites
+# ================================================================
+
 # Leer archivos CSV
-ubicaciones = pd.read_csv("UbicacionEstacionesPermanentesSentidos.csv", sep=";")
-datos = pd.read_csv("DATOS_ESTACIONES_MARZO_2025.csv", sep=";")
+ubicaciones = pd.read_csv(RUTA_UBICACIONES, sep=";")
+datos = pd.read_csv(RUTA_DATOS, sep=";")
 
 # Limpiar espacios y poner en minúsculas los nombres de columna
 ubicaciones.columns = ubicaciones.columns.str.strip()
@@ -25,11 +31,8 @@ if col_estacion is None:
 ubicaciones['district_code'] = ubicaciones[col_estacion]
 ubicaciones = ubicaciones[['district_code', 'Nombre']].drop_duplicates().rename(columns={'Nombre': 'district_name'})
 
-
-
 # Quitar filas con FEST vacío o nulo
 datos = datos[datos['FEST'].notnull() & (datos['FEST'] != '')]
-
 
 # Crear district_code numérico desde FEST ('ES01' -> 1)
 datos['district_code'] = datos['FEST'].str.replace('ES', '', regex=False).astype(int)
@@ -72,4 +75,7 @@ resultado = por_sentido.groupby(
 ).apply(media_solo_existentes, include_groups=False).reset_index(name='intensidad_media_diaria')
 
 resultado_final = resultado[['Dia', 'Mes', 'Año', 'district_code', 'district_name', 'intensidad_media_diaria']]
-resultado_final.to_csv("resultado.csv", index=False)
+
+# Guardar resultado usando la variable de ruta
+resultado_final.to_csv(RUTA_RESULTADO, index=False)
+print(f"Archivo guardado exitosamente en: {RUTA_RESULTADO}")
