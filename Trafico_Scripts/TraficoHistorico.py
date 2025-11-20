@@ -1,81 +1,146 @@
 import pandas as pd
+import re
+import sys
+import os
 
 # ==================== CONFIGURACIÓN DE RUTAS ====================
 RUTA_UBICACIONES = r"Trafico_Scripts\DocumentacionNecesaria\UbicacionEstacionesPermanentesSentidos.csv"
 RUTA_DATOS = r"Trafico_Scripts\DocumentacionNecesaria\DATOS_ESTACIONES_MARZO_2025.csv"
-RUTA_RESULTADO = r"Trafico_Scripts\Trafico_Scripts\Resultados\resultado.csv"  # Cambia esta ruta según necesites
+RUTA_VIALES = r"Trafico_Scripts\DocumentacionNecesaria\VialesVigentesDistritos_20251119.csv"
+RUTA_RESULTADO = r"Trafico_Scripts\Trafico_Scripts\Resultados\resultado.csv"  
 # ================================================================
+DISTRITOS_MADRID = {
+    1: "Centro", 2: "Arganzuela", 3: "Retiro", 4: "Salamanca", 5: "Chamartín",
+    6: "Tetuán", 7: "Chamberí", 8: "Fuencarral-El Pardo", 9: "Moncloa-Aravaca",
+    10: "Latina", 11: "Carabanchel", 12: "Usera", 13: "Puente de Vallecas",
+    14: "Moratalaz", 15: "Ciudad Lineal", 16: "Hortaleza", 17: "Villaverde",
+    18: "Villa de Vallecas", 19: "Vicálvaro", 20: "San Blas-Canillejas", 21: "Barajas"
+}
 
-# Leer archivos CSV
-ubicaciones = pd.read_csv(RUTA_UBICACIONES, sep=";")
-datos = pd.read_csv(RUTA_DATOS, sep=";")
+# ==================== FUNCIONES DE LIMPIEZA ====================
+def limpiar_nombre_calle(texto):
+    if pd.isna(texto): return ""
+    t = str(texto).upper().strip()
+    t = t.replace('FRANCISO', 'FRANCISCO') 
+    t = re.sub(r'\(.*?\)', '', t)
+    t = t.replace('Á', 'A').replace('É', 'E').replace('Í', 'I').replace('Ó', 'O').replace('Ú', 'U')
+    
+    particulas = ['DE LA', 'DEL', 'DE', 'LAS', 'LOS', 'LA', 'EL', 'AL']
+    particulas.sort(key=len, reverse=True)
+    for p in particulas:
+        t = re.sub(r'\b' + p + r'\b', ' ', t)
+        
+    return re.sub(r'\s+', ' ', t).strip()
 
-# Limpiar espacios y poner en minúsculas los nombres de columna
+def cargar_csv_seguro(ruta, sep=';'):
+    """Intenta cargar con utf-8, si falla prueba latin-1"""
+    if not os.path.exists(ruta):
+        return None, "Archivo no encontrado"
+    try:
+        return pd.read_csv(ruta, sep=sep, encoding='utf-8'), "utf-8"
+    except:
+        try:
+            return pd.read_csv(ruta, sep=sep, encoding='latin-1'), "latin-1"
+        except Exception as e:
+            return None, str(e)
+
+# ==================== 1. CARGA DE ARCHIVOS ====================
+print("1. Cargando archivos...")
+
+# Cargar VIALES
+viales, _ = cargar_csv_seguro(RUTA_VIALES)
+if viales is None:
+    print(f"ERROR: No se encuentra el archivo de viales: {RUTA_VIALES}")
+    sys.exit()
+
+# Cargar UBICACIONES
+ubicaciones, _ = cargar_csv_seguro(RUTA_UBICACIONES)
+if ubicaciones is None:
+    print(f"ERROR: No se encuentra el archivo de ubicaciones: {RUTA_UBICACIONES}")
+    sys.exit()
+
+# Cargar DATOS
+datos, _ = cargar_csv_seguro(RUTA_DATOS)
+if datos is None:
+    print(f"ERROR: No se encuentra el archivo de datos: {RUTA_DATOS}")
+    sys.exit()
+
+# Limpieza básica de nombres de columna
+viales.columns = viales.columns.str.strip()
 ubicaciones.columns = ubicaciones.columns.str.strip()
 datos.columns = datos.columns.str.strip()
 
-# Identificar la columna de estación automáticamente (con o sin tilde, mayúsculas o espacios)
-def buscar_columna_estacion(cols):
-    for col in cols:
-        nombre = col.strip().lower().replace("ó", "o")
-        if nombre == "estacion":
-            return col
-    return None
+# ==================== 2. VALIDACIÓN DE ARCHIVOS ====================
+print("2. Validando contenido...")
 
-col_estacion = buscar_columna_estacion(ubicaciones.columns)
-if col_estacion is None:
-    print("Columnas encontradas en CSV de ubicaciones:", ubicaciones.columns.tolist())
-    raise ValueError("No se encontró la columna de estación. Revisa la lista mostrada arriba y usa el nombre correcto.")
+# Verificar si Ubicaciones es realmente Ubicaciones
+if 'Nombre' not in ubicaciones.columns and 'Estación' not in ubicaciones.columns:
+    print("ERROR: El archivo cargado en RUTA_UBICACIONES no parece correcto.")
+    print(f"Columnas encontradas: {ubicaciones.columns.tolist()}")
+    print("Asegúrate de que RUTA_UBICACIONES apunta a 'UbicacionEstacionesPermanentesSentidos.csv'")
+    sys.exit()
 
-# Usar la columna identificada
-ubicaciones['district_code'] = ubicaciones[col_estacion]
-ubicaciones = ubicaciones[['district_code', 'Nombre']].drop_duplicates().rename(columns={'Nombre': 'district_name'})
+# Verificar si Datos es realmente Datos
+if 'HOR1' not in datos.columns and 'FEST' not in datos.columns:
+    print("ERROR: El archivo cargado en RUTA_DATOS no parece correcto (faltan columnas HOR1 o FEST).")
+    sys.exit()
 
-# Quitar filas con FEST vacío o nulo
-datos = datos[datos['FEST'].notnull() & (datos['FEST'] != '')]
+print("   -> Archivos validados correctamente.")
 
-# Crear district_code numérico desde FEST ('ES01' -> 1)
-datos['district_code'] = datos['FEST'].str.replace('ES', '', regex=False).astype(int)
-datos = datos.merge(ubicaciones, on='district_code', how='left')
+# ==================== 3. PROCESAMIENTO ====================
+print("3. Cruzando información...")
 
-# Extraer día, mes, año
-datos[['Dia', 'Mes', 'Año']] = datos['FDIA'].astype(str).str.split('/', expand=True)
+# --- A. VIALES ---
+viales['key_match'] = (viales['VIA_CLASE'].astype(str) + ' ' + viales['VIA_NOMBRE'].astype(str)).apply(limpiar_nombre_calle)
+viales['CO_DISTRITO'] = pd.to_numeric(viales['CO_DISTRITO'], errors='coerce')
+viales = viales.dropna(subset=['CO_DISTRITO'])
+viales['district_id'] = viales['CO_DISTRITO'].astype(int)
+viales['district_name'] = viales['district_id'].map(DISTRITOS_MADRID)
+viales_unicos = viales[['key_match', 'district_id', 'district_name']].drop_duplicates(subset='key_match')
 
-# Función para identificar sentido general
-def sentido_general(fsen):
-    fs = str(fsen).strip()
-    if fs.startswith('1'):
-        return 1
-    elif fs.startswith('2'):
-        return 2
-    else:
-        return None
+# --- B. UBICACIONES ---
+col_estacion = 'Estación' if 'Estación' in ubicaciones.columns else 'Estacion'
+ubicaciones = ubicaciones.rename(columns={col_estacion: 'station_id'})
+ubicaciones['key_match'] = ubicaciones['Nombre'].apply(limpiar_nombre_calle)
 
-datos['sentido'] = datos['FSEN'].apply(sentido_general)
+estaciones_map = ubicaciones[['station_id', 'key_match']].drop_duplicates(subset='station_id')
+estaciones_con_distrito = estaciones_map.merge(viales_unicos, on='key_match', how='left')
 
-# Asegúrate de considerar solo columnas de horas que existen en el CSV
-horas = [f'HOR{i}' for i in range(1, 13) if f'HOR{i}' in datos.columns]
-datos['total_12h'] = datos[horas].sum(axis=1)
+encontrados = estaciones_con_distrito['district_id'].notnull().sum()
+print(f"   -> Estaciones ubicadas: {encontrados} de {len(estaciones_con_distrito)}")
 
-# Agrupar y calcular suma total por sentido/estacion/día
-por_sentido = datos.groupby(
-    ['FDIA', 'district_code', 'district_name', 'sentido', 'Dia', 'Mes', 'Año']
-)['total_12h'].sum().reset_index(name='total_24h')
+# --- C. DATOS Y CÁLCULO ---
+print("4. Calculando resultados...")
+datos = datos[datos['FEST'].notnull()].copy()
+datos['station_id'] = datos['FEST'].astype(str).str.replace('ES', '', regex=False).astype(int)
 
-# Función: calcular solo sobre sentidos existentes (>0)
-def media_solo_existentes(df):
-    sentidos_validos = df['total_24h'][df['total_24h'] > 0]
-    if len(sentidos_validos) == 0:
-        return 0  # O np.nan si lo prefieres
-    return sentidos_validos.mean() / 24
+# Unir todo
+datos_full = datos.merge(estaciones_con_distrito[['station_id', 'district_id', 'district_name']], on='station_id', how='left')
 
-# Calcular intensidad_media_diaria
-resultado = por_sentido.groupby(
-    ['FDIA', 'district_code', 'district_name', 'Dia', 'Mes', 'Año']
-).apply(media_solo_existentes, include_groups=False).reset_index(name='intensidad_media_diaria')
+# Calcular volumen diario
+cols_horas = [c for c in datos_full.columns if c.startswith('HOR')]
+datos_full['volumen_total'] = datos_full[cols_horas].sum(axis=1)
 
-resultado_final = resultado[['Dia', 'Mes', 'Año', 'district_code', 'district_name', 'intensidad_media_diaria']]
+# Extraer fecha
+datos_full[['Dia', 'Mes', 'Año']] = datos_full['FDIA'].astype(str).str.split('/', expand=True)
 
-# Guardar resultado usando la variable de ruta
-resultado_final.to_csv(RUTA_RESULTADO, index=False)
-print(f"Archivo guardado exitosamente en: {RUTA_RESULTADO}")
+# Agrupar por distrito
+resultado = datos_full.groupby(
+    ['FDIA', 'Dia', 'Mes', 'Año', 'district_id', 'district_name']
+)['volumen_total'].sum().reset_index(name='volumen_total_distrito')
+
+# IMD (dividir por 24h)
+resultado['intensidad_media_diaria'] = resultado['volumen_total_distrito'] / 24
+
+# === CORRECCIÓN FINAL DE FORMATO ===
+# Forzamos que el district_id sea entero para quitar el '.0'
+resultado['district_id'] = resultado['district_id'].astype(int)
+# 2. Quitamos decimales de intensidad_media_diaria
+resultado['intensidad_media_diaria'] = resultado['intensidad_media_diaria'].astype(int)
+
+
+resultado = resultado[['Dia', 'Mes', 'Año', 'district_id', 'district_name', 'intensidad_media_diaria']]
+resultado.to_csv(RUTA_RESULTADO, index=False, sep=';', decimal=',')
+
+print(f"¡LISTO! Archivo guardado en: {RUTA_RESULTADO}")
+print(resultado.head())
