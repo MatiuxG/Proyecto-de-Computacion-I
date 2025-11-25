@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# -*- coding: utf-8 -*-
 import sys, csv, re, json, unicodedata
 from pathlib import Path
 from datetime import datetime
@@ -12,30 +11,52 @@ BASE_URL = "https://opendata.aemet.es/opendata/api"
 STATIONS_URL = f"{BASE_URL}/valores/climatologicos/inventarioestaciones/todasestaciones"
 DAILY_URL_TPL = f"{BASE_URL}/valores/climatologicos/diarios/datos/fechaini/{{start_str}}/fechafin/{{end_str}}/estacion/{{station_id}}"
 
-OUT_DIR = Path("Clima_Scripts\Clima_Scripts\Resultados")
+OUT_DIR = Path("Clima_Scripts/Clima_Scripts/Resultados") # Ajuste de ruta para compatibilidad Linux/Windows
 OUT_FILE = OUT_DIR / "datasheet_clima.csv"
 
 HEADERS = {"accept": "application/json", "api_key": API_KEY}
 ENCODING = "utf-8"
 CSV_SEP = ";"
 
-# Ventana de fechas (ejemplo: 2 meses atrás)
-try:
-    MONTHS_BACK = int(sys.argv[1]) if len(sys.argv) > 1 else 2
-except Exception:
-    MONTHS_BACK = 2
-
-# Mapa de estaciones de Madrid a Códigos de Distrito
-# (Simplificado, puedes ampliarlo si usas más estaciones)
-STATION_TO_DISTRICT = {
-    "3195": ("03", "Retiro"),           # Madrid, Retiro
-    "3129": ("21", "Barajas"),          # Madrid, Aeropuerto
-    "3194U": ("07", "Chamberí"),        # Madrid, C. Universitaria
-    "3196": ("13", "Puente de Vallecas"),# Madrid, Vallecas
-    "3200": ("08", "Fuencarral-El Pardo"),# Madrid, El Goloso
+# Mapeo de Estaciones AEMET -> Lista de Distritos (Código, Nombre)
+# Se asigna la estación más cercana a cada grupo de distritos para cubrir del 00 al 21.
+STATION_MAPPING = {
+    "3195": [   # Estación: Madrid - Retiro
+        ("00", "Madrid"), 
+        ("01", "Centro"), 
+        ("02", "Arganzuela"), 
+        ("03", "Retiro"), 
+        ("04", "Salamanca"), 
+        ("14", "Moratalaz"), 
+        ("15", "Ciudad Lineal")
+    ],
+    "3129": [   # Estación: Madrid - Barajas
+        ("16", "Hortaleza"), 
+        ("20", "San Blas-Canillejas"), 
+        ("21", "Barajas")
+    ],
+    "3194U": [  # Estación: Madrid - Ciudad Universitaria
+        ("05", "Chamartín"), 
+        ("06", "Tetuán"), 
+        ("07", "Chamberí"), 
+        ("09", "Moncloa-Aravaca")
+    ],
+    "3196": [   # Estación: Madrid - Vallecas
+        ("13", "Puente de Vallecas"), 
+        ("18", "Villa de Vallecas"), 
+        ("19", "Vicálvaro")
+    ],
+    "3200": [   # Estación: Madrid - Fuencarral/El Goloso
+        ("08", "Fuencarral-El Pardo")
+    ],
+    "3191": [   # Estación: Madrid - Cuatro Vientos
+        ("10", "Latina"), 
+        ("11", "Carabanchel"), 
+        ("12", "Usera"), 
+        ("17", "Villaverde")
+    ]
 }
 
-# Columnas finales solicitadas (Insolacion_h eliminada)
 FINAL_COLUMNS = [
     "Dia", "Mes", "Año", "district_code", "district_name", 
     "Temp_Media_°C", "Temp_Max_°C", "Temp_Min_°C", "Hora_Temp_Max", "Hora_Temp_Min", 
@@ -47,26 +68,26 @@ FINAL_COLUMNS = [
 
 def req_aemet(url: str, label: str = None) -> dict:
     print(f"[{label or 'req'}] GET {url}")
-    r = requests.get(url, headers=HEADERS, verify=True)
-    r.raise_for_status()
-    data = r.json()
-    
-    if data.get("estado") == 200:
-        r_data = requests.get(data["datos"], headers=HEADERS, verify=True)
-        r_data.raise_for_status()
-        # Decodificar manualmente para manejar acentos
-        return json.loads(r_data.content.decode('iso-8859-1'))
+    try:
+        r = requests.get(url, headers=HEADERS, verify=True)
+        r.raise_for_status()
+        data = r.json()
         
-    print(f"[{label or 'req'}] HTTP {r.status_code} -> {url}")
-    if data.get("descripcion"):
-        print(f"  [Error AEMET] {data['descripcion']}")
-    return {}
+        if data.get("estado") == 200:
+            r_data = requests.get(data["datos"], headers=HEADERS, verify=True)
+            r_data.raise_for_status()
+            return json.loads(r_data.content.decode('iso-8859-1'))
+            
+        print(f"[{label or 'req'}] HTTP {r.status_code} -> {url}")
+        if data.get("descripcion"):
+            print(f"  [Error AEMET] {data['descripcion']}")
+        return {}
+    except Exception as e:
+        print(f"  [Excepción] {e}")
+        return {}
 
-def parse_record(record: dict, station_id: str) -> dict:
-    # Se mantiene "NA" para distritos no mapeados, ya que 0 no es apropiado
-    district_code, district_name = STATION_TO_DISTRICT.get(station_id, ("NA", "NA"))
-    
-    # Extraer y formatear fecha
+def parse_record(record: dict, district_code: str, district_name: str) -> dict:
+    # Procesamos la fecha
     date_str = record.get("fecha", "")
     try:
         dt = datetime.strptime(date_str, "%Y-%m-%d")
@@ -74,7 +95,7 @@ def parse_record(record: dict, station_id: str) -> dict:
         mes = dt.month
         anio = dt.year
     except ValueError:
-        dia, mes, anio = 0, 0, 0 # Cambiado de "NA" a 0
+        dia, mes, anio = 0, 0, 0 
 
     return {
         "Dia": dia,
@@ -82,7 +103,6 @@ def parse_record(record: dict, station_id: str) -> dict:
         "Año": anio,
         "district_code": district_code,
         "district_name": district_name,
-        # Cambiado el default de "NA" a "0"
         "Temp_Media_°C": record.get("tmed", "0").replace(",","."),
         "Temp_Max_°C": record.get("tmax", "0").replace(",","."),
         "Temp_Min_°C": record.get("tmin", "0").replace(",","."),
@@ -93,40 +113,54 @@ def parse_record(record: dict, station_id: str) -> dict:
         "Racha_Max_m/s": record.get("racha", "0").replace(",","."),
         "Presion_Max_hPa": record.get("presMax", "0").replace(",","."),
         "Presion_Min_hPa": record.get("presMin", "0").replace(",","."),
-        # "Insolacion_h" eliminada
-        "date_iso_debug": date_str # Para depuración
+        "date_iso_debug": date_str 
     }
 
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     
-    end_date = datetime.now()
-    start_date = end_date - pd.DateOffset(months=MONTHS_BACK)
+    # --- FECHAS: JULIO-SEPTIEMBRE 2025 ---
+    start_date = datetime(2025, 7, 1)
+    end_date = datetime(2025, 9, 30)
+    
     start_str = start_date.strftime("%Y-%m-%dT00:00:00UTC")
     end_str = end_date.strftime("%Y-%m-%dT23:59:59UTC")
     
+    print(f"[Info] Extrayendo datos desde {start_str} hasta {end_str}")
+
     all_data = []
     
-    for station_id in STATION_TO_DISTRICT.keys():
+    # Iterar por cada estación definida en el mapeo
+    for station_id, districts_list in STATION_MAPPING.items():
+        print(f"--- Procesando Estación {station_id} para {len(districts_list)} distritos ---")
         try:
             url = DAILY_URL_TPL.format(start_str=start_str, end_str=end_str, station_id=station_id)
             records = req_aemet(url, label=f"clima-{station_id}")
+            
             if records:
-                all_data.extend([parse_record(r, station_id) for r in records])
+                # Si obtenemos datos de la estación, los replicamos para cada distrito asociado
+                for record in records:
+                    for d_code, d_name in districts_list:
+                        all_data.append(parse_record(record, d_code, d_name))
+            else:
+                print(f"  [Aviso] Sin datos devueltos para estación {station_id}")
+
         except Exception as e:
             print(f"  [Error] Fallo al procesar estación {station_id}: {e}")
 
     if not all_data:
-        print("[Aviso] No se obtuvieron datos de clima.")
-        # Guardar CSV vacío con cabeceras si no hay datos
+        print("[Aviso] No se obtuvieron datos de clima para ninguna zona.")
         df = pd.DataFrame(columns=FINAL_COLUMNS)
     else:
         df = pd.DataFrame(all_data)
-        # Asegurar que solo tengamos las columnas finales y en el orden correcto
+        # Asegurar columnas finales
         for col in FINAL_COLUMNS:
             if col not in df.columns:
-                df[col] = "0" # Rellenar con "0" si alguna columna faltase por completo
+                df[col] = "0"
         df = df[FINAL_COLUMNS]
+
+    # Ordenar por fecha y distrito para limpieza
+    df.sort_values(by=["Año", "Mes", "Dia", "district_code"], inplace=True)
 
     df.to_csv(
         OUT_FILE, 

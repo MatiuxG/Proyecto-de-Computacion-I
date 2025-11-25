@@ -16,7 +16,7 @@ import pandas as pd
 
 CSV_URL = "https://datos.madrid.es/egob/catalogo/300538-11514071-obras-planificadas-ejecucion.csv"
 
-OUTPUT_DIR = Path("./Obras_Scripts/Resultados")
+OUTPUT_DIR = Path("Obras_Scripts\Obras_Scripts\Resultados")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUT_CSV = OUTPUT_DIR / "datasheet_plazo_ejecucion.csv"
 
@@ -40,49 +40,30 @@ def normalize(s):
     return s.strip()
 
 def extract_date_from_expediente(exp):
-    """
-    Convert formats like:
-    711/2020/05971
-    711202005971
-    711/2020/05971-L2-012
-    Into day/month/year
-    """
     if not exp:
         return "", "", "", ""
-
     exp = str(exp).strip()
-
-    # Remove suffixes like "-L2-012"
     exp = re.split(r"[- ]", exp)[0]
-
-    # Remove all non-digits
     digits = re.sub(r"[^0-9]", "", exp)
-
     if len(digits) < 7:
         return "", "", "", ""
-
     dia = digits[0]
     mes = digits[1:3]
     año = digits[3:7]
-
     try:
         fecha = datetime(int(año), int(mes), int(dia)).strftime("%Y-%m-%d")
     except:
         fecha = ""
-
     return dia, mes, año, fecha
 
 def get_first_district(name):
     if not name:
         return "", ""
-
     parts = re.split(r"[-–.,;/]+", name)
     first = normalize(parts[0]).lower()
-
     for code, dname in MADRID_DISTRICTS.items():
         if first.startswith(normalize(dname).lower()):
             return code, dname
-
     return "", name
 
 # ================================
@@ -98,7 +79,6 @@ def main():
 
     if "DISTRITO_S" not in df.columns or "N_EXPEDIEN" not in df.columns:
         print("[ERROR] Missing expected columns in dataset")
-        print("Columns found:", df.columns.tolist())
         return
 
     rows = []
@@ -120,13 +100,15 @@ def main():
         })
 
     out = pd.DataFrame(rows)
-
     out = out[~(out.eq("").all(axis=1))]
-
     out = out[~((out["dia"] == "") & (out["mes"] == "") & (out["año"] == ""))]
+    
+    # --- MODIFICADO: FILTRO FECHAS (Julio-Septiembre 2025) ---
+    print("Filtrando datos para Julio-Septiembre 2025...")
+    mask = (out["año"].astype(str) == "2025") & (out["mes"].astype(str).str.zfill(2).isin(["07", "08", "09"]))
+    out = out[mask]
 
     out = out.reset_index(drop=True)
-
     out.to_csv(OUT_CSV, sep=";", index=False, encoding="utf-8-sig")
 
     print(f"[OK] CSV generado → {OUT_CSV.resolve()} ({len(out)} filas)")

@@ -16,16 +16,13 @@ from dateutil.relativedelta import relativedelta
 # ================================
 
 PAGES = [
-    # Ficha "Calidad del aire: datos diarios desde 2001"
     "https://datos.madrid.es/sites/v/index.jsp?vgnextoid=aecb88a7e2b73410VgnVCM2000000c205a0aRCRD&vgnextchannel=374512b9ace9f310VgnVCM100000171f5a0aRCRD",
 ]
 
-# Override directo al CSV estable de diarios
 OVERRIDES: Dict[str, str] = {
     "aecb88a7e2b73410": "https://datos.madrid.es/egob/catalogo/201410-10306624-calidad-aire-diario.csv"
 }
 
-# Catálogos de estaciones candidatos (el script probará en orden)
 STATIONS_CATALOG_CANDIDATES = [
     "https://datos.madrid.es/egob/catalogo/201210-0-estaciones-calidad-aire.csv",
     "https://datos.madrid.es/egob/catalogo/201210-0-estaciones-calidad-aire.json",
@@ -35,13 +32,11 @@ STATIONS_CATALOG_CANDIDATES = [
     "https://datos.madrid.es/egob/catalogo/201210-0-red-vigilancia-calidad-aire-estaciones.json",
 ]
 
-OUTPUT_DIR = Path("CalidadAire_Scripts\CalidadAire_Scripts\Resultados")
+OUTPUT_DIR = Path("CalidadAire_Scripts/CalidadAire_Scripts/Resultados")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-OUT_FILE = OUTPUT_DIR / "datasheet_calidad_aire_agregado.csv" # --- NUEVO NOMBRE DE ARCHIVO ---
-# EXTRAS_FILE = OUTPUT_DIR / "extras_calidad_aire.csv" # Ya no se usa
+OUT_FILE = OUTPUT_DIR / "datasheet_calidad_aire_agregado.csv"
 DEBUG_HEAD = OUTPUT_DIR / "debug_calidad_aire_head.csv"
 
-# CSV local opcional (si falla internet / formato raro)
 LOCAL_STATIONS_CSV = Path("./CalidadAire_Scripts/estaciones_custom.csv")
 
 HEADERS = {
@@ -51,26 +46,20 @@ HEADERS = {
 }
 REQ_TIMEOUT = 60
 
-TODAY = datetime.today().date()
-DEFAULT_START = TODAY - relativedelta(months=2)
-DEFAULT_END = TODAY
+# --- RANGO DE FECHAS FIJO (Julio - Septiembre 2025) ---
+DEFAULT_START = date_cls(2025, 7, 1)
+DEFAULT_END = date_cls(2025, 9, 30)
 
-# --- NUEVAS COLUMNAS SOLICITADAS (MODIFICADAS) ---
 NEW_COLUMNS = [
     "dia", "mes", "año", "numero de distrito", "nombre del distrito",
     "Oxidosde nitrogeno", "Particulas"
 ]
-# --- FIN NUEVAS COLUMNAS ---
 
-# MAGNITUD → contaminante conocido
-# (Mantenemos los códigos necesarios para las nuevas columnas)
 MAGNITUD_MAP = {
-    # 6:"co",   # Monóxido de Carbono (ELIMINADO)
-    7:"no",   # Óxido de Nitrógeno
-    8:"no2",  # Dióxido de Nitrógeno
-    10:"pm10", # Partículas < 10 µm
-    12:"pm25", # Partículas < 2.5 µm
-    # --- Otros contaminantes (ignorados en el nuevo datasheet) ---
+    7:"no",
+    8:"no2",
+    10:"pm10",
+    12:"pm25",
     1:"so2",
     9:"o3",
 }
@@ -78,25 +67,37 @@ OPEN_DATA_UNIT = {
     "so2":"µg/m³","co":"mg/m³","no":"µg/m³","no2":"µg/m³","o3":"µg/m³","pm10":"µg/m³","pm25":"µg/m³"
 }
 
-# Fallback embebido (puedes ampliarlo fácilmente)
-# code: (district_code, district_name, lat, lon, name)
+# --- MODIFICADO: LISTADO COMPLETO DE ESTACIONES ACTIVAS ---
+# Formato: ID: (DistritoID, NombreDistrito, Lat, Lon, NombreEstacion)
 STATION_FALLBACK: Dict[str, Tuple[str,str,str,str,str]] = {
-    # Las tres de tu muestra
-    "011": ("01", "Centro",               "", "", "Plaza del Carmen"),
-    "016": ("15", "Ciudad Lineal",        "", "", "Arturo Soria"),
-    "017": ("08", "Fuencarral-El Pardo",  "", "", "Barrio del Pilar"),
-    # Algunas habituales (útiles si aparecen)
-    "012": ("03", "Retiro",               "", "", "Retiro"),
-    "013": ("05", "Chamartín",            "", "", "Castellana"),
-    "014": ("07", "Chamberí",             "", "", "Escuelas Aguirre"),
-    "018": ("21", "Barajas",              "", "", "Barajas"),
-    "019": ("20", "San Blas-Canillejas",  "", "", "San Blas"),
-    "020": ("10", "Latina",               "", "", "Casa de Campo"),
-    "022": ("16", "Hortaleza",            "", "", "Hortaleza"),
+    "004": ("09", "Moncloa-Aravaca", "40.423853", "-3.712247", "Pza. de España"),
+    "008": ("04", "Salamanca", "40.421564", "-3.682319", "Escuelas Aguirre"),
+    "011": ("05", "Chamartín", "40.451475", "-3.677356", "Avda. Ramón y Cajal"),
+    "016": ("15", "Ciudad Lineal", "40.440047", "-3.639233", "Arturo Soria"),
+    "017": ("17", "Villaverde", "40.347138", "-3.713322", "Villaverde Alto"),
+    "018": ("11", "Carabanchel", "40.394782", "-3.731853", "Farolillo"),
+    "024": ("09", "Moncloa-Aravaca", "40.419356", "-3.747347", "Casa de Campo"),
+    "027": ("21", "Barajas", "40.476928", "-3.580031", "Barajas Pueblo"),
+    "035": ("01", "Centro", "40.419208", "-3.703170", "Pza. del Carmen"),
+    "036": ("14", "Moratalaz", "40.407948", "-3.645306", "Moratalaz"),
+    "038": ("06", "Tetuán", "40.445544", "-3.707128", "Cuatro Caminos"),
+    "039": ("08", "Fuencarral-El Pardo", "40.478228", "-3.711542", "Barrio del Pilar"),
+    "040": ("13", "Puente de Vallecas", "40.388153", "-3.651522", "Vallecas"),
+    "047": ("02", "Arganzuela", "40.398114", "-3.686825", "Mendez Alvaro"),
+    "048": ("05", "Chamartín", "40.439897", "-3.690372", "Castellana"),
+    "049": ("03", "Retiro", "40.414437", "-3.682562", "Parque del Retiro"),
+    "050": ("05", "Chamartín", "40.465572", "-3.688769", "Plaza Castilla"),
+    "054": ("18", "Villa de Vallecas", "40.372933", "-3.616344", "Ensanche de Vallecas"),
+    "055": ("21", "Barajas", "40.462531", "-3.580747", "Urb. Embajada"),
+    "056": ("11", "Carabanchel", "40.385033", "-3.718728", "Pza. Elíptica"),
+    "057": ("16", "Hortaleza", "40.494208", "-3.660503", "Sanchinarro"),
+    "058": ("08", "Fuencarral-El Pardo", "40.518058", "-3.774611", "El Pardo"),
+    "059": ("21", "Barajas", "40.460725", "-3.616344", "Juan Carlos I"),
+    "060": ("08", "Fuencarral-El Pardo", "40.500547", "-3.689731", "Tres Olivos"),
 }
 
 # ================================
-# Helpers
+# Helpers y lógica
 # ================================
 
 def nfd_lower(s: str) -> str:
@@ -152,7 +153,6 @@ def find_valid_data_url_from_page(page_url: str, soup: BeautifulSoup) -> Optiona
     return sorted(candidates, key=lambda t: t[0])[0][1] if candidates else None
 
 def load_table(url: str) -> Optional[pd.DataFrame]:
-    """Carga CSV/JSON con detección robusta de encoding/separador."""
     r = requests.get(url, headers=HEADERS, timeout=REQ_TIMEOUT)
     r.raise_for_status()
     ctype = (r.headers.get("Content-Type") or "").lower()
@@ -161,13 +161,13 @@ def load_table(url: str) -> Optional[pd.DataFrame]:
     if u.endswith(".csv") or "csv" in ctype:
         data = r.content
         for enc in ("utf-8-sig","utf-8","latin-1",None):
-            for sep in (";","\t",",","|"):
+            for sep in (";", "\t", ",", "|"):
                 try:
                     if enc is None:
                         df = pd.read_csv(io.BytesIO(data), sep=sep, dtype=str, low_memory=False)
                     else:
                         df = pd.read_csv(io.BytesIO(data), sep=sep, dtype=str, low_memory=False, encoding=enc)
-                    if df.shape[1] == 1:  # separador erróneo
+                    if df.shape[1] == 1:
                         continue
                     return df
                 except Exception:
@@ -184,16 +184,8 @@ def load_table(url: str) -> Optional[pd.DataFrame]:
 
     return None
 
-# ================================
-# Estaciones → distrito/coords
-# ================================
-
 def build_station_lookup() -> Dict[str, Dict[str,str]]:
-    """
-    Devuelve { '011': {'district_code':'01','district_name':'Centro','lat':'..','lon':'..','name':'..'}, ... }
-    Prioridad: catálogo online → CSV local 'estaciones_custom.csv' → fallback embebido.
-    """
-    # 1) Intento catálogo online
+    # Intentar cargar catálogo online
     for url in STATIONS_CATALOG_CANDIDATES:
         try:
             df = load_table(url)
@@ -220,11 +212,9 @@ def build_station_lookup() -> Dict[str, Dict[str,str]]:
                 if not m:
                     continue
                 sid = m.group(1).zfill(3)
-
                 dcode = str(row.get(dist_code, "") or "").strip()
                 if dcode != "":
                     dcode = re.sub(r"\D", "", dcode).zfill(2)
-
                 lookup[sid] = {
                     "district_code": dcode,
                     "district_name": str(row.get(dist_name, "") or "").strip(),
@@ -239,7 +229,7 @@ def build_station_lookup() -> Dict[str, Dict[str,str]]:
             print(f"[Lookup] Error con {url}: {e}")
             continue
 
-    # 2) Intento CSV local opcional
+    # Si falla, intentar CSV local
     if LOCAL_STATIONS_CSV.exists():
         try:
             df = pd.read_csv(LOCAL_STATIONS_CSV, dtype=str)
@@ -265,9 +255,9 @@ def build_station_lookup() -> Dict[str, Dict[str,str]]:
         except Exception as e:
             print(f"[Lookup] Error leyendo CSV local: {e}")
 
-    # 3) Fallback embebido
+    # Si todo falla, usar fallback completo
     if STATION_FALLBACK:
-        print("[Lookup] Usando fallback estático de estaciones.")
+        print("[Lookup] Usando fallback estático de estaciones (LISTA COMPLETA).")
         return {k: {"district_code":v[0],"district_name":v[1],"lat":v[2],"lon":v[3],"name":v[4]}
                 for k,v in STATION_FALLBACK.items()}
 
@@ -275,17 +265,10 @@ def build_station_lookup() -> Dict[str, Dict[str,str]]:
     return {}
 
 def extract_station_code(punto_muestreo: str) -> Optional[str]:
-    """
-    PUNTO_MUESTREO típico: '28079NNN_XX_Y' → sacamos NNN (3 dígitos).
-    """
     if not punto_muestreo:
         return None
     m = re.search(r"28079(\d{3})", str(punto_muestreo))
     return m.group(1) if m else None
-
-# ================================
-# Limpieza y expansión diaria
-# ================================
 
 def clean_value_str(s):
     if s is None:
@@ -299,7 +282,6 @@ def clean_value_str(s):
     return m.group(0).replace(",", ".")
 
 def expand_month_to_daily(df: pd.DataFrame) -> pd.DataFrame:
-    """Usa D01..D31 como valor; V01..V31 (validación) no es obligatoria."""
     if df.empty:
         return df
 
@@ -353,7 +335,6 @@ def expand_month_to_daily(df: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame()
     out["fecha"] = long_df["fecha"]
 
-    # pollutant + unit (fallbacks)
     def _map_pol_and_unit(v):
         try:
             code = int(float(str(v).replace(",", ".")))
@@ -366,17 +347,10 @@ def expand_month_to_daily(df: pd.DataFrame) -> pd.DataFrame:
     pol_unit = long_df[mag].map(_map_pol_and_unit) if mag in long_df.columns else [("mag_unknown","NA")] * len(long_df)
     out["pollutant"] = [t[0] for t in pol_unit]
     out["aq_unit"]   = [t[1] for t in pol_unit]
-
-    # Station fields
     out["station_code"] = long_df[pm].map(extract_station_code) if pm in long_df.columns else None
     out["station_name"] = long_df[st_name].astype(str) if st_name in long_df.columns else ""
-
     out["aq_value"] = long_df["aq_value"].astype(float)
     return out.reset_index(drop=True)
-
-# ================================
-# Pipeline
-# ================================
 
 def process_one(page_url: str) -> pd.DataFrame:
     print(f"\n[Ficha] {page_url}")
@@ -408,7 +382,6 @@ def process_one(page_url: str) -> pd.DataFrame:
             DEBUG_HEAD, index=False, sep=";", encoding="utf-8-sig",
             quoting=csv.QUOTE_NONE, escapechar="\\", lineterminator="\n"
         )
-        print(f"  [Debug] Primeras 200 filas → {DEBUG_HEAD.resolve()}")
     except Exception:
         pass
 
@@ -423,16 +396,10 @@ def filter_window_daily(daily: pd.DataFrame, start_date: date_cls, end_date: dat
     mask = daily["fecha"].between(start_date, end_date)
     return daily[mask].copy()
 
-# --- NUEVA FUNCIÓN DE CONSTRUCCIÓN DE DATASHEET ---
-
 def build_custom_datasheet(df_daily: pd.DataFrame, station_lookup: Dict[str, Dict[str,str]]) -> pd.DataFrame:
-    """
-    Construye el datasheet personalizado agregado por distrito y fecha.
-    """
     if df_daily.empty:
         return pd.DataFrame(columns=NEW_COLUMNS)
 
-    # 1. Enriquecer con distrito
     def get_district_info(station_code):
         meta = station_lookup.get(str(station_code).strip(), {})
         return pd.Series({
@@ -443,8 +410,8 @@ def build_custom_datasheet(df_daily: pd.DataFrame, station_lookup: Dict[str, Dic
     district_info = df_daily["station_code"].apply(get_district_info)
     df_enriched = pd.concat([df_daily, district_info], axis=1)
 
-    # 2. Filtrar solo los contaminantes relevantes y distritos conocidos
-    contaminantes_necesarios = ['no', 'no2', 'pm10', 'pm25'] # MODIFICADO: Se quitó 'co'
+    contaminantes_necesarios = ['no', 'no2', 'pm10', 'pm25']
+    # Asegurar que no se filtren datos si el distrito existe
     df_filtered = df_enriched[
         df_enriched['pollutant'].isin(contaminantes_necesarios) &
         (df_enriched['district_code'] != "") &
@@ -455,21 +422,16 @@ def build_custom_datasheet(df_daily: pd.DataFrame, station_lookup: Dict[str, Dic
         print("  [Aviso] No se encontraron datos para los contaminantes o distritos solicitados.")
         return pd.DataFrame(columns=NEW_COLUMNS)
 
-    # 3. Pivotar por estación (para tener co, no, no2, etc. como columnas)
-    # Esto maneja el caso de que una estación no mida todos los contaminantes
     df_pivot_station = df_filtered.pivot_table(
         index=['fecha', 'district_code', 'district_name', 'station_code'],
         columns='pollutant',
         values='aq_value'
     ).reset_index()
 
-    # 4. Agregar por distrito (promedio de las estaciones de ese distrito)
-    # Agrupamos por fecha, district_code y district_name y calculamos la media
     df_agg_district = df_pivot_station.groupby(
         ['fecha', 'district_code', 'district_name']
     ).mean(numeric_only=True).reset_index()
 
-    # 5. Construir columnas finales
     df_final = pd.DataFrame()
     df_final['fecha_dt'] = pd.to_datetime(df_agg_district['fecha'])
     df_final['dia'] = df_final['fecha_dt'].dt.day
@@ -478,56 +440,34 @@ def build_custom_datasheet(df_daily: pd.DataFrame, station_lookup: Dict[str, Dic
     df_final['numero de distrito'] = df_agg_district['district_code']
     df_final['nombre del distrito'] = df_agg_district['district_name']
 
-    # Funciones 'sum' con manejo de NaNs (si falta NO o NO2, usa el que haya)
-    # .sum(skipna=True, min_count=1) -> si ambos son NaN, da NaN (se convertirá en NA).
-    # Si uno existe, da ese valor. Si ambos existen, los suma.
-
-    # Oxidosde nitrogeno (NO + NO2)
     cols_no_nox = [c for c in ['no', 'no2'] if c in df_agg_district.columns]
     if not cols_no_nox:
         df_final['Oxidosde nitrogeno'] = pd.NA
     else:
-        # Sumamos NO y NO2 para obtener el total de Óxidos de Nitrógeno
         df_final['Oxidosde nitrogeno'] = df_agg_district[cols_no_nox].sum(axis=1, skipna=True, min_count=1)
 
-    # Monoxido de carbono (CO) - ELIMINADO
-    # df_final['Monoxido de carbono'] = df_agg_district.get('co', pd.NA)
-
-    # Particulas (PM10 + PM25)
     cols_pm = [c for c in ['pm10', 'pm25'] if c in df_agg_district.columns]
     if not cols_pm:
         df_final['Particulas'] = pd.NA
     else:
-        # Sumamos PM10 y PM25 para el total de Partículas
         df_final['Particulas'] = df_agg_district[cols_pm].sum(axis=1, skipna=True, min_count=1)
 
-    # Hidrocarburos no está en los datos de origen mapeados - ELIMINADO
-    # df_final['Hidrocarburos'] = pd.NA
-
-    # Reordenar y rellenar NAs
-    # Nos aseguramos de que solo estén las columnas pedidas
     df_out = pd.DataFrame()
     for col in NEW_COLUMNS:
         df_out[col] = df_final.get(col, pd.NA)
 
-    # Rellenamos cualquier NaN/NaT que quede con 0 (MODIFICADO)
     df_out = df_out.fillna(0)
-
     return df_out.sort_values(by=['año', 'mes', 'dia', 'numero de distrito']).reset_index(drop=True)
-
-# --- FIN NUEVA FUNCIÓN ---
 
 def main():
     start_date = DEFAULT_START
     end_date = DEFAULT_END
     print(f"[Ventana] {start_date.isoformat()} -> {end_date.isoformat()}")
 
-    # 1) Catálogo de estaciones → lookup
     station_lookup = build_station_lookup()
     if not station_lookup:
         print("[Aviso] No se pudo cargar catálogo de estaciones ni fallback útil. Distritos 'NA'.")
 
-    # 2) Carga y filtro ventana
     parts = []
     for url in PAGES:
         daily_all = process_one(url)
@@ -538,7 +478,6 @@ def main():
 
     if not parts:
         print("\n[Resultado] Sin filas en la ventana.")
-        # MODIFICADO: Usar nuevas columnas para el archivo vacío
         pd.DataFrame(columns=NEW_COLUMNS).to_csv(
             OUT_FILE, index=False, sep=";", encoding="utf-8-sig",
             quoting=csv.QUOTE_NONE, escapechar="\\", lineterminator="\n"
@@ -547,20 +486,13 @@ def main():
         return
 
     daily = pd.concat(parts, ignore_index=True, sort=False)
-
-    # 3) Construir datasheet personalizado
-    # MODIFICADO: Llamar a la nueva función
     datasheet = build_custom_datasheet(daily, station_lookup)
 
-    # 4) Guardado
     datasheet.to_csv(
         OUT_FILE, index=False, sep=";", encoding="utf-8-sig",
         quoting=csv.QUOTE_NONE, escapechar="\\", lineterminator="\n"
     )
     
-    # MODIFICADO: Eliminada la sección de guardado de "extras"
-    # MODIFICADO: Eliminada la sección de diagnóstico (ya no aplica igual)
-
     print(f"\n[OK] Datasheet escrito: {OUT_FILE.resolve()}")
     print(f"[Filas] {len(datasheet)}")
 
