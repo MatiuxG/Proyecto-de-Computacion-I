@@ -13,7 +13,6 @@ import requests
 import pandas as pd
 from bs4 import BeautifulSoup
 from dateutil import parser as dtparser
-from dateutil.relativedelta import relativedelta
 import xml.etree.ElementTree as ET
 
 # ================================
@@ -40,11 +39,11 @@ HEADERS = {
 CSV_EXT = (".csv",)
 JSON_EXT = (".json", ".geojson")
 
-# --- MODIFICADO: RANGO DE FECHAS FIJO (Julio - Septiembre 2025) ---
-DEFAULT_START = date_cls(2025, 7, 1)
-DEFAULT_END = date_cls(2025, 9, 30)
+# --- RANGO DE FECHAS (2022 a 2024) ---
+DEFAULT_START = date_cls(2022, 1, 1)
+DEFAULT_END = date_cls(2024, 12, 31)
 
-# --- MODIFICADO: Columnas finales solicitadas ---
+# --- Columnas finales solicitadas ---
 FINAL_COLUMNS = [
     "Dia", "Mes", "Año", "district_code", "district_name", "total_de_accidentes"
 ]
@@ -244,6 +243,8 @@ def process_one(page_url: str, start_date: date_cls, end_date: date_cls) -> pd.D
         print("  [Aviso] No se hallaron URLs de descarga.")
         return pd.DataFrame()
 
+    # --- MODIFICADO: Acumular TODOS los dataframes válidos de la página ---
+    dfs = [] 
     for dl in download_urls:
         if not (dl.lower().endswith(CSV_EXT) or dl.lower().endswith(JSON_EXT)):
             continue
@@ -258,15 +259,20 @@ def process_one(page_url: str, start_date: date_cls, end_date: date_cls) -> pd.D
         df = normalize_cols(df)
         df = filter_by_window(df, start_date, end_date)
         if df.empty:
+            print(f"    [Info] Datos descargados fuera de ventana temporal (ignorado): {dl}")
             continue
 
         df["__source_page__"] = page_url
         df["__download__"] = dl
-        print(f"  [Filtrado] {df.shape} filas")
-        return df
+        print(f"  [Filtrado] {df.shape} filas en ventana.")
+        dfs.append(df)
 
-    print("  [Info] Ninguna descarga produjo filas en la ventana.")
-    return pd.DataFrame()
+    if not dfs:
+        print("  [Info] Ninguna descarga produjo filas en la ventana.")
+        return pd.DataFrame()
+    
+    # Combinar todos los archivos encontrados (2022, 2023, 2024...)
+    return pd.concat(dfs, ignore_index=True, sort=False)
 
 def build_contract_from_raw(df_raw: pd.DataFrame) -> pd.DataFrame:
     if df_raw.empty:
@@ -275,6 +281,7 @@ def build_contract_from_raw(df_raw: pd.DataFrame) -> pd.DataFrame:
     df = df_raw.copy()
     out = pd.DataFrame()
 
+    # --- Fechas ---
     dt_cols = guess_datetime_cols(df)
     if dt_cols:
         full = None
@@ -288,7 +295,6 @@ def build_contract_from_raw(df_raw: pd.DataFrame) -> pd.DataFrame:
         out["Dia"] = dt_parsed.dt.day
         out["Mes"] = dt_parsed.dt.month
         out["Año"] = dt_parsed.dt.year
-
     else:
         dcol = next((c for c in df.columns if c in ("fecha","date","dia","día")), None)
         if dcol:
@@ -301,30 +307,32 @@ def build_contract_from_raw(df_raw: pd.DataFrame) -> pd.DataFrame:
             out["Mes"] = pd.Series(dtype='Int64')
             out["Año"] = pd.Series(dtype='Int64')
 
+    # --- Distritos: CORREGIDO ---
     dcode, dname = guess_district_cols(df)
-    code_series = None
+    
+    # Prioridad: Obtener el código limpio.
+    # Si tenemos columna de código, la usamos. Si no, usamos la de nombre asumiendo que contiene el código (tu caso).
+    raw_code = None
     if dcode:
-        code_series = df[dcode].astype(str).str.extract(r"(\d+)")[0]
-    elif dname and df[dname].astype(str).str.match(r"^\s*\d+\s*$").all():
-        code_series = df[dname].astype(str).str.extract(r"(\d+)")[0]
-
-    out["district_code"] = (
-        code_series.fillna("") if code_series is not None
-        else (df.get(dcode, "").astype(str) if dcode else "")
-    )
-
-    if dname and not df[dname].astype(str).str.match(r"^\s*\d+\s*$").all():
-        out["district_name"] = df[dname].astype(str)
+        raw_code = df[dcode]
+    elif dname:
+        raw_code = df[dname]
+    
+    if raw_code is not None:
+        # Extraer dígitos para limpiar el código
+        out["district_code"] = raw_code.astype(str).str.extract(r"(\d+)")[0].fillna("NA")
     else:
-        if code_series is not None:
-            out["district_name"] = code_series.map(
-                lambda x: MADRID_DISTRICTS.get(x, MADRID_DISTRICTS.get(x.zfill(2), "NA"))
-            )
-        else:
-            out["district_name"] = "NA"
+        out["district_code"] = "NA"
 
-    # Nota: ya no extraemos ubicación detallada para el CSV final,
-    # pero el resto del flujo sigue igual hasta el filtrado final.
+    # Mapeo FORZADO: Usar el diccionario basándose estrictamente en el código
+    def get_district_name(code):
+        if pd.isna(code) or code == "NA":
+            return "NA"
+        c = str(code).strip()
+        # Intentar match exacto (ej: "1") o con padding (ej: "01")
+        return MADRID_DISTRICTS.get(c, MADRID_DISTRICTS.get(c.zfill(2), "NA"))
+
+    out["district_name"] = out["district_code"].apply(get_district_name)
     
     return out
 
@@ -357,28 +365,19 @@ def main():
     standardized = standardized.fillna("NA")
     standardized = standardized.replace(r"^\s*$", "NA", regex=True)
     
-    # === MODIFICACIÓN: Agregación de datos ===
-    # El usuario quiere agrupar por Dia, Mes, Año, district_code, district_name
-    # y sumar la cantidad de accidentes (filas).
-    
+    # === Agregación de datos ===
     group_cols = ["Dia", "Mes", "Año", "district_code", "district_name"]
-    
-    # Verificamos que las columnas existan antes de agrupar (seguridad)
     valid_cols = [c for c in group_cols if c in standardized.columns]
     
     if valid_cols:
-        # size() cuenta el número de filas en cada grupo
         standardized = standardized.groupby(valid_cols).size().reset_index(name='total_de_accidentes')
     else:
-        # Fallback si no hay columnas para agrupar
         standardized['total_de_accidentes'] = 1
 
-    # Aseguramos que todas las columnas finales existan
     for col in FINAL_COLUMNS:
         if col not in standardized.columns:
             standardized[col] = "NA"
     
-    # Filtramos para tener SOLO las columnas solicitadas
     standardized = standardized[FINAL_COLUMNS]
 
     standardized.to_csv(
