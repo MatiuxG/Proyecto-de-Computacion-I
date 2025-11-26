@@ -117,12 +117,23 @@ def main():
 
     df = df.dropna(subset=["FECHA_USADA"])
 
+    # === MODIFICACIÓN: Definir rango de fechas ===
+    fecha_inicio_filtro = datetime(2025, 7, 1)
+    fecha_fin_filtro = datetime(2025, 9, 30)
+    # =============================================
+
     today = datetime.today()
 
     rows = []
 
     for _, row in df.iterrows():
         fecha = row["FECHA_USADA"]
+        
+        # === MODIFICACIÓN: Aplicar filtro ===
+        if not (fecha_inicio_filtro <= fecha <= fecha_fin_filtro):
+            continue
+        # ====================================
+
         fecha_fin = row["FECHA_FINA"]
 
         dia = f"{fecha.day:02d}"
@@ -147,6 +158,7 @@ def main():
     out.to_csv(OUT_CSV, sep=";", index=False, encoding="utf-8-sig")
 
     print(f"[OK] CSV generated → {OUT_CSV.resolve()} ({len(out)} rows)")
+    print("[CHECK] Filter applied: Only July-Sept 2025 ✅")
     print("[CHECK] ALL DATES = FECHA_INIC unless missing ✅")
     print("[CHECK] NO district missing ✅")
 

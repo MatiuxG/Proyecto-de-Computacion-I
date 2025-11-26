@@ -1,126 +1,147 @@
 import pandas as pd
-import re
 import sys
 import os
 
 # ==================== CONFIGURACIÓN DE RUTAS ====================
-RUTA_UBICACIONES = r"Trafico_Scripts\DocumentacionNecesaria\UbicacionEstacionesPermanentesSentidos.csv"
-# NOTA: Asegúrate de que este archivo contenga datos de Julio-Septiembre 2025
-RUTA_DATOS = r"Trafico_Scripts\DocumentacionNecesaria\DATOS_ESTACIONES_MARZO_2025.csv" 
-RUTA_VIALES = r"Trafico_Scripts\DocumentacionNecesaria\VialesVigentesDistritos_20251119.csv"
-RUTA_RESULTADO = r"Trafico_Scripts\Trafico_Scripts\Resultados\resultado.csv"  
-# ================================================================
+BASE_DIR = "Trafico_Scripts"
 
-DISTRITOS_MADRID = {
+# Rutas de Entrada
+DIR_DATOS = os.path.join(BASE_DIR, "DatosHistoricos")
+DIR_DOCS = os.path.join(BASE_DIR, "DocumentacionNecesaria")
+
+# Archivos específicos
+ARCHIVOS_TRAFICO = ["07-2025.csv", "08-2025.csv", "09-2025.csv"]
+ARCHIVO_UBICACION = "pmed_ubicacion_09-2025.csv"
+
+# Ruta de Salida
+DIR_RESULTADOS = os.path.join(BASE_DIR, "Trafico_Scripts", "Resultados")
+RUTA_SALIDA = os.path.join(DIR_RESULTADOS, "resultado.csv")
+
+# Diccionario de Distritos
+DISTRITOS = {
     1: "Centro", 2: "Arganzuela", 3: "Retiro", 4: "Salamanca", 5: "Chamartín",
     6: "Tetuán", 7: "Chamberí", 8: "Fuencarral-El Pardo", 9: "Moncloa-Aravaca",
     10: "Latina", 11: "Carabanchel", 12: "Usera", 13: "Puente de Vallecas",
     14: "Moratalaz", 15: "Ciudad Lineal", 16: "Hortaleza", 17: "Villaverde",
     18: "Villa de Vallecas", 19: "Vicálvaro", 20: "San Blas-Canillejas", 21: "Barajas"
 }
+# ================================================================
 
-def limpiar_nombre_calle(texto):
-    if pd.isna(texto): return ""
-    t = str(texto).upper().strip()
-    t = t.replace('FRANCISO', 'FRANCISCO') 
-    t = re.sub(r'\(.*?\)', '', t)
-    t = t.replace('Á', 'A').replace('É', 'E').replace('Í', 'I').replace('Ó', 'O').replace('Ú', 'U')
-    particulas = ['DE LA', 'DEL', 'DE', 'LAS', 'LOS', 'LA', 'EL', 'AL']
-    particulas.sort(key=len, reverse=True)
-    for p in particulas:
-        t = re.sub(r'\b' + p + r'\b', ' ', t)
-    return re.sub(r'\s+', ' ', t).strip()
+def crear_directorios():
+    os.makedirs(DIR_RESULTADOS, exist_ok=True)
 
-def cargar_csv_seguro(ruta, sep=';'):
-    if not os.path.exists(ruta):
-        return None, "Archivo no encontrado"
-    try:
-        return pd.read_csv(ruta, sep=sep, encoding='utf-8'), "utf-8"
-    except:
+def cargar_csv_flexible(ruta):
+    if not os.path.exists(ruta): return None
+    formatos = [(';', 'utf-8'), (';', 'latin-1'), (',', 'utf-8'), (',', 'latin-1')]
+    for sep, enc in formatos:
         try:
-            return pd.read_csv(ruta, sep=sep, encoding='latin-1'), "latin-1"
-        except Exception as e:
-            return None, str(e)
+            df = pd.read_csv(ruta, sep=sep, encoding=enc, nrows=5, on_bad_lines='skip')
+            if len(df.columns) > 1:
+                return pd.read_csv(ruta, sep=sep, encoding=enc, on_bad_lines='skip')
+        except: continue
+    return None
 
-print("1. Cargando archivos...")
+# ==================== PROCESO ETL ====================
 
-viales, _ = cargar_csv_seguro(RUTA_VIALES)
-if viales is None:
-    print(f"ERROR: No se encuentra el archivo de viales: {RUTA_VIALES}")
+print("--- INICIANDO PROCESAMIENTO (CORRECCIÓN FECHAS) ---")
+crear_directorios()
+
+# 1. CARGAR UBICACIONES
+ruta_ubic = os.path.join(DIR_DOCS, ARCHIVO_UBICACION)
+print(f"\n1. Cargando mapa de sensores: {ruta_ubic}")
+df_ubic = cargar_csv_flexible(ruta_ubic)
+
+if df_ubic is None:
+    print(f"ERROR: No se pudo leer {ruta_ubic}")
     sys.exit()
 
-ubicaciones, _ = cargar_csv_seguro(RUTA_UBICACIONES)
-if ubicaciones is None:
-    print(f"ERROR: No se encuentra el archivo de ubicaciones: {RUTA_UBICACIONES}")
+df_ubic.columns = df_ubic.columns.str.strip().str.upper()
+
+col_id_sensor = next((c for c in df_ubic.columns if c in ['ID', 'CODIGO', 'COD_CENT', 'COD_UBIC']), None)
+col_distrito = next((c for c in df_ubic.columns if 'DISTRIT' in c), None)
+
+if not col_id_sensor:
+    print("ERROR: No se encuentra ID en archivo de ubicación.")
     sys.exit()
 
-datos, _ = cargar_csv_seguro(RUTA_DATOS)
-if datos is None:
-    print(f"ERROR: No se encuentra el archivo de datos: {RUTA_DATOS}")
+maestro_sensores = df_ubic[[col_id_sensor]].copy()
+maestro_sensores.rename(columns={col_id_sensor: 'id_sensor'}, inplace=True)
+
+if col_distrito:
+    maestro_sensores['id_distrito'] = pd.to_numeric(df_ubic[col_distrito].astype(str).str.extract(r'(\d+)', expand=False), errors='coerce').fillna(0).astype(int)
+else:
+    maestro_sensores['id_distrito'] = 0
+
+maestro_sensores['nombre_distrito'] = maestro_sensores['id_distrito'].map(DISTRITOS).fillna("Desconocido")
+maestro_sensores = maestro_sensores[maestro_sensores['id_distrito'] > 0].copy()
+
+# 2. CARGAR DATOS DE TRÁFICO
+print("\n2. Procesando archivos de tráfico...")
+dfs_trafico = []
+
+for archivo in ARCHIVOS_TRAFICO:
+    ruta = os.path.join(DIR_DATOS, archivo)
+    print(f"   -> Leyendo: {archivo}")
+    df = cargar_csv_flexible(ruta)
+    
+    if df is not None:
+        df.columns = df.columns.str.strip().str.upper()
+        
+        col_id_traf = next((c for c in df.columns if c in ['ID', 'PUNTO_MEDIDA', 'COD_CENT', 'IDELEM']), None)
+        col_fecha = next((c for c in df.columns if c in ['FECHA', 'FDIA']), None)
+        
+        if col_id_traf and col_fecha:
+            df.rename(columns={col_id_traf: 'id_sensor'}, inplace=True)
+            
+            # Intensidad
+            cols_horas = [c for c in df.columns if c.startswith('HOR')]
+            if cols_horas:
+                df['trafico_dia'] = df[cols_horas].sum(axis=1, numeric_only=True)
+            elif 'INTENSIDAD' in df.columns:
+                df['trafico_dia'] = df['INTENSIDAD']
+            else:
+                df['trafico_dia'] = 0
+            
+            # --- CORRECCIÓN DE FECHAS ---
+            # Si tuviste el problema de día/mes invertido, significa que tu archivo probablemente es MM/DD/YYYY
+            # pero se leyó como DD/MM/YYYY.
+            
+            try:
+                # Intentamos convertir a datetime automáticamente. 
+                # dayfirst=False asume formato Mes/Día (Americano), que parece ser lo que tienes.
+                fechas_dt = pd.to_datetime(df[col_fecha], dayfirst=False, errors='coerce')
+                
+                df['dia'] = fechas_dt.dt.day
+                df['mes'] = fechas_dt.dt.month
+                df['año'] = fechas_dt.dt.year
+            except:
+                # Si falla, fallback manual (Split por /)
+                # Asumimos que la posición 0 es MES y 1 es DÍA según tu reporte
+                split_fecha = df[col_fecha].astype(str).str.split('/', expand=True)
+                df['mes'] = split_fecha[0].astype(int) # Posición 0 al mes
+                df['dia'] = split_fecha[1].astype(int) # Posición 1 al día
+                df['año'] = split_fecha[2].astype(int)
+
+            dfs_trafico.append(df[['id_sensor', 'dia', 'mes', 'año', 'trafico_dia']])
+        else:
+            print(f"      AVISO: Columnas faltantes en {archivo}")
+
+if not dfs_trafico:
+    print("ERROR: No hay datos.")
     sys.exit()
 
-viales.columns = viales.columns.str.strip()
-ubicaciones.columns = ubicaciones.columns.str.strip()
-datos.columns = datos.columns.str.strip()
+df_trafico_total = pd.concat(dfs_trafico, ignore_index=True)
 
-print("2. Validando contenido...")
+# 3. CRUCE Y GUARDADO
+print("\n3. Generando dataset final...")
+df_final = df_trafico_total.merge(maestro_sensores, on='id_sensor', how='inner')
+resultado = df_final.groupby(['dia', 'mes', 'año', 'id_distrito', 'nombre_distrito'])['trafico_dia'].mean().reset_index()
 
-if 'Nombre' not in ubicaciones.columns and 'Estación' not in ubicaciones.columns:
-    print("ERROR: El archivo cargado en RUTA_UBICACIONES no parece correcto.")
-    sys.exit()
+resultado.rename(columns={'trafico_dia': 'trafico_medio'}, inplace=True)
+resultado['trafico_medio'] = resultado['trafico_medio'].round(0).astype(int)
+resultado = resultado[['dia', 'mes', 'año', 'id_distrito', 'nombre_distrito', 'trafico_medio']]
 
-if 'HOR1' not in datos.columns and 'FEST' not in datos.columns:
-    print("ERROR: El archivo cargado en RUTA_DATOS no parece correcto.")
-    sys.exit()
-
-print("   -> Archivos validados correctamente.")
-
-print("3. Cruzando información...")
-
-viales['key_match'] = (viales['VIA_CLASE'].astype(str) + ' ' + viales['VIA_NOMBRE'].astype(str)).apply(limpiar_nombre_calle)
-viales['CO_DISTRITO'] = pd.to_numeric(viales['CO_DISTRITO'], errors='coerce')
-viales = viales.dropna(subset=['CO_DISTRITO'])
-viales['district_id'] = viales['CO_DISTRITO'].astype(int)
-viales['district_name'] = viales['district_id'].map(DISTRITOS_MADRID)
-viales_unicos = viales[['key_match', 'district_id', 'district_name']].drop_duplicates(subset='key_match')
-
-col_estacion = 'Estación' if 'Estación' in ubicaciones.columns else 'Estacion'
-ubicaciones = ubicaciones.rename(columns={col_estacion: 'station_id'})
-ubicaciones['key_match'] = ubicaciones['Nombre'].apply(limpiar_nombre_calle)
-
-estaciones_map = ubicaciones[['station_id', 'key_match']].drop_duplicates(subset='station_id')
-estaciones_con_distrito = estaciones_map.merge(viales_unicos, on='key_match', how='left')
-
-encontrados = estaciones_con_distrito['district_id'].notnull().sum()
-print(f"   -> Estaciones ubicadas: {encontrados} de {len(estaciones_con_distrito)}")
-
-print("4. Calculando resultados...")
-datos = datos[datos['FEST'].notnull()].copy()
-datos['station_id'] = datos['FEST'].astype(str).str.replace('ES', '', regex=False).astype(int)
-
-datos_full = datos.merge(estaciones_con_distrito[['station_id', 'district_id', 'district_name']], on='station_id', how='left')
-
-cols_horas = [c for c in datos_full.columns if c.startswith('HOR')]
-datos_full['volumen_total'] = datos_full[cols_horas].sum(axis=1)
-
-datos_full[['Dia', 'Mes', 'Año']] = datos_full['FDIA'].astype(str).str.split('/', expand=True)
-
-# --- MODIFICADO: FILTRO FECHAS (Julio-Septiembre 2025) ---
-print("Filtrando datos para Julio-Septiembre 2025...")
-mask = (datos_full["Año"].astype(str) == "2025") & (datos_full["Mes"].astype(str).str.zfill(2).isin(["07", "08", "09"]))
-datos_full = datos_full[mask]
-
-resultado = datos_full.groupby(
-    ['FDIA', 'Dia', 'Mes', 'Año', 'district_id', 'district_name']
-)['volumen_total'].sum().reset_index(name='volumen_total_distrito')
-
-resultado['intensidad_media_diaria'] = resultado['volumen_total_distrito'] / 24
-
-resultado['district_id'] = resultado['district_id'].astype(int)
-resultado['intensidad_media_diaria'] = resultado['intensidad_media_diaria'].astype(int)
-
-resultado = resultado[['Dia', 'Mes', 'Año', 'district_id', 'district_name', 'intensidad_media_diaria']]
-resultado.to_csv(RUTA_RESULTADO, index=False, sep=';', decimal=',')
-
-print(f"¡LISTO! Archivo guardado en: {RUTA_RESULTADO}")
+print(f"\n4. Guardando en: {RUTA_SALIDA}")
+resultado.to_csv(RUTA_SALIDA, index=False, sep=';', decimal=',')
+print("¡HECHO!")
 print(resultado.head())

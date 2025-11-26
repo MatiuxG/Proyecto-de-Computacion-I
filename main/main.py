@@ -37,13 +37,11 @@ def main():
         # Renombrar columnas
         df = df.rename(columns=key_mapping)
 
-        # --- CORRECCIÓN APLICADA AQUÍ ---
         # 1. Estandarizar Código de distrito (01, 02...)
         if 'Codigo_de_distrito' in df.columns:
             df['Codigo_de_distrito'] = df['Codigo_de_distrito'].apply(lambda x: str(x).strip().zfill(2) if pd.notna(x) else x)
         
         # 2. Estandarizar Nombre de distrito (quitar espacios y poner en formato Título)
-        # Esto hace que "CENTRO", "Centro " y "Centro" sean todos "Centro"
         if 'nombre_de_distrito' in df.columns:
             df['nombre_de_distrito'] = df['nombre_de_distrito'].astype(str).str.strip().str.title()
 
@@ -89,12 +87,24 @@ def main():
     }
     df_emerg = load_and_standardize("Emergencias", paths["emergencias"], map_emerg, cols_emerg)
 
-    # E. OBRAS (Si deseas incluirlo, asegúrate de mapear bien las columnas)
+    # E. OBRAS (Opcional, descomentar si se requiere)
     # df_obras = load_and_standardize("Obras", paths["obras"], map_obras, cols_obras)
+
+    # F. TRÁFICO (Nueva sección agregada)
+    cols_trafico = ['trafico_medio']
+    map_trafico = {
+        'dia': 'Dia', 
+        'mes': 'Mes', 
+        'año': 'Año', 
+        'id_distrito': 'Codigo_de_distrito', 
+        'nombre_distrito': 'nombre_de_distrito'
+    }
+    df_trafico = load_and_standardize("Tráfico", paths["trafico"], map_trafico, cols_trafico)
 
     # --- 2. Unión de Datasets ---
     
-    dfs = [d for d in [df_clima, df_acc, df_aire, df_emerg] if d is not None]
+    # Se añade df_trafico a la lista para el merge
+    dfs = [d for d in [df_clima, df_acc, df_aire, df_emerg, df_trafico] if d is not None]
 
     if not dfs:
         print("No se cargó ningún dataset. Finalizando.")
