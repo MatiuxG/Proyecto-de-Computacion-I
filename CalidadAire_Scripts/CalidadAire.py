@@ -32,7 +32,7 @@ STATIONS_CATALOG_CANDIDATES = [
     "https://datos.madrid.es/egob/catalogo/201210-0-red-vigilancia-calidad-aire-estaciones.json",
 ]
 
-OUTPUT_DIR = Path("CalidadAire_Scripts/CalidadAire_Scripts/Resultados")
+OUTPUT_DIR = Path("CalidadAire_Scripts/Resultados")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUT_FILE = OUTPUT_DIR / "datasheet_calidad_aire_agregado.csv"
 DEBUG_HEAD = OUTPUT_DIR / "debug_calidad_aire_head.csv"

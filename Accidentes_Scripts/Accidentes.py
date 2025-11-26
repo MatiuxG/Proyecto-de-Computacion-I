@@ -27,7 +27,7 @@ DATASET_PAGES = [
 
 HARDCODED_DOWNLOADS: Dict[str, List[str]] = {}
 
-OUTPUT_DIR = Path("Accidentes_Scripts/Accidentes_Scripts/Resultados")
+OUTPUT_DIR = Path("Accidentes_Scripts/Resultados")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUT_FILE = OUTPUT_DIR / "datasheet_accidentes.csv"
 

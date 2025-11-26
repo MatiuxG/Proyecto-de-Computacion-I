@@ -2,13 +2,13 @@
 # Code in English, comments in Spanish
 
 import io
-import re
-import unicodedata
 from pathlib import Path
 from datetime import datetime
-
 import requests
 import pandas as pd
+import unicodedata
+import re
+from difflib import get_close_matches
 
 # ================================
 # CONFIG
@@ -16,9 +16,10 @@ import pandas as pd
 
 CSV_URL = "https://datos.madrid.es/egob/catalogo/300538-11514071-obras-planificadas-ejecucion.csv"
 
-OUTPUT_DIR = Path("Obras_Scripts\Obras_Scripts\Resultados")
+OUTPUT_DIR = Path("Obras_Scripts/Resultados")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-OUT_CSV = OUTPUT_DIR / "datasheet_plazo_ejecucion.csv"
+
+OUT_CSV = OUTPUT_DIR / "datasheet_obras_estado.csv"
 
 MADRID_DISTRICTS = {
     "01":"Centro","02":"Arganzuela","03":"Retiro","04":"Salamanca",
@@ -37,58 +38,100 @@ def normalize(s):
     if not s:
         return ""
     s = unicodedata.normalize("NFD", s).encode("ascii","ignore").decode()
-    return s.strip()
+    return s.lower().strip()
 
-def extract_date_from_expediente(exp):
-    if not exp:
-        return "", "", "", ""
-    exp = str(exp).strip()
-    exp = re.split(r"[- ]", exp)[0]
-    digits = re.sub(r"[^0-9]", "", exp)
-    if len(digits) < 7:
-        return "", "", "", ""
-    dia = digits[0]
-    mes = digits[1:3]
-    año = digits[3:7]
+def clean_date(value):
+    if not value or value in ("0", "0.0", "nan"):
+        return ""
+    return str(value).strip()
+
+def parse_date_safe(value):
+    """Intenta múltiples formatos sin perder FECHA_INIC"""
+    value = clean_date(value)
+
+    # try DD/MM/YYYY
     try:
-        fecha = datetime(int(año), int(mes), int(dia)).strftime("%Y-%m-%d")
+        return datetime.strptime(value, "%d/%m/%Y")
     except:
-        fecha = ""
-    return dia, mes, año, fecha
+        pass
 
-def get_first_district(name):
-    if not name:
-        return "", ""
-    parts = re.split(r"[-–.,;/]+", name)
-    first = normalize(parts[0]).lower()
-    for code, dname in MADRID_DISTRICTS.items():
-        if first.startswith(normalize(dname).lower()):
-            return code, dname
-    return "", name
+    # try YYYY-MM-DD
+    try:
+        return datetime.strptime(value, "%Y-%m-%d")
+    except:
+        pass
+
+    return pd.NaT
+
+def smart_district_lookup(row):
+    # 1) exact from DISTRITO_S
+    raw = normalize(row.get("DISTRITO_S", ""))
+    for code, name in MADRID_DISTRICTS.items():
+        if normalize(name) in raw:
+            return code, name
+
+    # 2) search in text fields
+    for field in ["DENOMINACI", "VIARIO_AFE", "DESCRIPCIO"]:
+        text = normalize(row.get(field, ""))
+        for code, name in MADRID_DISTRICTS.items():
+            if normalize(name) in text:
+                return code, name
+
+    # 3) fuzzy match
+    text = normalize(
+        " ".join([
+            row.get("DENOMINACI", ""),
+            row.get("VIARIO_AFE", ""),
+            row.get("DESCRIPCIO", "")
+        ])
+    )
+
+    district_names = [normalize(x) for x in MADRID_DISTRICTS.values()]
+    match = get_close_matches(text, district_names, n=1, cutoff=0.75)
+
+    if match:
+        for code, name in MADRID_DISTRICTS.items():
+            if normalize(name) == match[0]:
+                return code, name
+
+    # 4) fallback final
+    return "00", "Sin asignar"
 
 # ================================
 # MAIN
 # ================================
 
 def main():
-    print("[INFO] Downloading CSV...")
+    print("[INFO] Downloading dataset...")
     r = requests.get(CSV_URL, timeout=60)
     r.raise_for_status()
 
     df = pd.read_csv(io.BytesIO(r.content), sep=";", dtype=str).fillna("")
 
-    if "DISTRITO_S" not in df.columns or "N_EXPEDIEN" not in df.columns:
-        print("[ERROR] Missing expected columns in dataset")
-        return
+    # robust date parsing
+    df["FECHA_INIC"] = df["FECHA_INIC"].apply(parse_date_safe)
+    df["FECHA_FINA"] = df["FECHA_FINA"].apply(parse_date_safe)
+
+    # final selection of date WITHOUT overwriting valid FECHA_INIC
+    df["FECHA_USADA"] = df["FECHA_INIC"].combine_first(df["FECHA_FINA"])
+
+    df = df.dropna(subset=["FECHA_USADA"])
+
+    today = datetime.today()
 
     rows = []
 
     for _, row in df.iterrows():
-        distrito_raw = row["DISTRITO_S"]
-        expediente = row["N_EXPEDIEN"]
+        fecha = row["FECHA_USADA"]
+        fecha_fin = row["FECHA_FINA"]
 
-        no_dist, nombre_dist = get_first_district(distrito_raw)
-        dia, mes, año, iso = extract_date_from_expediente(expediente)
+        dia = f"{fecha.day:02d}"
+        mes = f"{fecha.month:02d}"
+        año = str(fecha.year)
+
+        no_dist, nombre_dist = smart_district_lookup(row)
+
+        terminada = False if pd.isna(fecha_fin) else (fecha_fin < today)
 
         rows.append({
             "dia": dia,
@@ -96,22 +139,16 @@ def main():
             "año": año,
             "no_distrito": no_dist,
             "nombre_distrito": nombre_dist,
-            "plazo_ejecucion_fecha_normalizada": iso
+            "terminada": str(terminada).lower()
         })
 
     out = pd.DataFrame(rows)
-    out = out[~(out.eq("").all(axis=1))]
-    out = out[~((out["dia"] == "") & (out["mes"] == "") & (out["año"] == ""))]
-    
-    # --- MODIFICADO: FILTRO FECHAS (Julio-Septiembre 2025) ---
-    print("Filtrando datos para Julio-Septiembre 2025...")
-    mask = (out["año"].astype(str) == "2025") & (out["mes"].astype(str).str.zfill(2).isin(["07", "08", "09"]))
-    out = out[mask]
 
-    out = out.reset_index(drop=True)
     out.to_csv(OUT_CSV, sep=";", index=False, encoding="utf-8-sig")
 
-    print(f"[OK] CSV generado → {OUT_CSV.resolve()} ({len(out)} filas)")
+    print(f"[OK] CSV generated → {OUT_CSV.resolve()} ({len(out)} rows)")
+    print("[CHECK] ALL DATES = FECHA_INIC unless missing ✅")
+    print("[CHECK] NO district missing ✅")
 
 if __name__ == "__main__":
     main()

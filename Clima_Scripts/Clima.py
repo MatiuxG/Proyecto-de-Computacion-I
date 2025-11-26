@@ -11,7 +11,7 @@ BASE_URL = "https://opendata.aemet.es/opendata/api"
 STATIONS_URL = f"{BASE_URL}/valores/climatologicos/inventarioestaciones/todasestaciones"
 DAILY_URL_TPL = f"{BASE_URL}/valores/climatologicos/diarios/datos/fechaini/{{start_str}}/fechafin/{{end_str}}/estacion/{{station_id}}"
 
-OUT_DIR = Path("Clima_Scripts/Clima_Scripts/Resultados") # Ajuste de ruta para compatibilidad Linux/Windows
+OUT_DIR = Path("Clima_Scripts/Resultados") # Ajuste de ruta para compatibilidad Linux/Windows
 OUT_FILE = OUT_DIR / "datasheet_clima.csv"
 
 HEADERS = {"accept": "application/json", "api_key": API_KEY}

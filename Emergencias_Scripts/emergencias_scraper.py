@@ -22,7 +22,7 @@ HEADERS = {
 }
 TIMEOUT = 60
 
-OUTPUT_DIR = Path("Emergencias_Scripts/Emergencias_Scripts/Resultados")
+OUTPUT_DIR = Path("Emergencias_Scripts/Resultados")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 OUT_FINAL = OUTPUT_DIR / "datasheet_emergencias.csv"
