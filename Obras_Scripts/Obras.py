@@ -1,166 +1,209 @@
 # -*- coding: utf-8 -*-
-# Code in English, comments in Spanish
+"""
+Datasheet unificado OBRAS Madrid
+Versión PRO reconstruida (Modo B distritos: SIN acentos, SIN guiones, MAYÚSCULAS)
 
+✔ Descarga y unifica datos desde 2022
+✔ Normaliza distritos con 4 niveles (exacto / alias / fuzzy / fallback)
+✔ Limpieza total de fechas y campos corruptos
+✔ Compatible con RapidMiner
+✔ Igual arquitectura interna que emergencias_scraper.py
+"""
+
+import csv
 import io
+import re
+import unicodedata
 from pathlib import Path
 from datetime import datetime
-import requests
 import pandas as pd
-import unicodedata
-import re
+import requests
 from difflib import get_close_matches
 
-# ================================
+# ============================================================
 # CONFIG
-# ================================
+# ============================================================
 
 CSV_URL = "https://datos.madrid.es/egob/catalogo/300538-11514071-obras-planificadas-ejecucion.csv"
+
+HEADERS = {
+    "User-Agent": "MateoScraperBot/9.0",
+    "Accept": "*/*"
+}
 
 OUTPUT_DIR = Path("Obras_Scripts/Resultados")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-OUT_CSV = OUTPUT_DIR / "datasheet_obras_estado.csv"
+OUT_FILE = OUTPUT_DIR / "datasheet_obras.csv"
 
-MADRID_DISTRICTS = {
-    "01":"Centro","02":"Arganzuela","03":"Retiro","04":"Salamanca",
-    "05":"Chamartín","06":"Tetuán","07":"Chamberí","08":"Fuencarral-El Pardo",
-    "09":"Moncloa-Aravaca","10":"Latina","11":"Carabanchel","12":"Usera",
-    "13":"Puente de Vallecas","14":"Moratalaz","15":"Ciudad Lineal",
-    "16":"Hortaleza","17":"Villaverde","18":"Villa de Vallecas",
-    "19":"Vicálvaro","20":"San Blas-Canillejas","21":"Barajas"
-}
+TIMEOUT = 60
 
-# ================================
-# HELPERS
-# ================================
+# ============================================================
+# NORMALIZACIÓN MODO B
+# ============================================================
 
-def normalize(s):
+def normalize_text(s):
+    """Modo B — mayúsculas, sin acentos, sin guiones, espacios simples."""
     if not s:
         return ""
-    s = unicodedata.normalize("NFD", s).encode("ascii","ignore").decode()
-    return s.lower().strip()
+    s = str(s).upper()
+    s = unicodedata.normalize("NFD", s)
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+    s = re.sub(r"-", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+MADRID_DISTRICTS = {
+    normalize_text("CENTRO"): 1,
+    normalize_text("ARGANZUELA"): 2,
+    normalize_text("RETIRO"): 3,
+    normalize_text("SALAMANCA"): 4,
+    normalize_text("CHAMARTIN"): 5,
+    normalize_text("TETUAN"): 6,
+    normalize_text("CHAMBERI"): 7,
+    normalize_text("FUENCARRAL EL PARDO"): 8,
+    normalize_text("MONCLOA ARAVACA"): 9,
+    normalize_text("LATINA"): 10,
+    normalize_text("CARABANCHEL"): 11,
+    normalize_text("USERA"): 12,
+    normalize_text("PUENTE DE VALLECAS"): 13,
+    normalize_text("MORATALAZ"): 14,
+    normalize_text("CIUDAD LINEAL"): 15,
+    normalize_text("HORTALEZA"): 16,
+    normalize_text("VILLAVERDE"): 17,
+    normalize_text("VILLA DE VALLECAS"): 18,
+    normalize_text("VICALVARO"): 19,
+    normalize_text("SAN BLAS CANILLEJAS"): 20,
+    normalize_text("BARAJAS"): 21,
+}
+
+ALIAS = {
+    "VALLECAS PTE": "PUENTE DE VALLECAS",
+    "VALLECAS-PTE": "PUENTE DE VALLECAS",
+    "FUENCARRAL EL-PARDO": "FUENCARRAL EL PARDO",
+    "SAN BLAS": "SAN BLAS CANILLEJAS",
+}
+
+# ============================================================
+# UTILIDADES
+# ============================================================
+
+def clean(s):
+    if not s or str(s).strip().upper() in ("", "NAN", "NONE", "NULL"):
+        return "NA"
+    return normalize_text(s)
 
 def clean_date(value):
     if not value or value in ("0", "0.0", "nan"):
         return ""
     return str(value).strip()
 
-def parse_date_safe(value):
-    """Intenta múltiples formatos sin perder FECHA_INIC"""
-    value = clean_date(value)
+def parse_date_safe(v):
+    """Parsea fecha robustamente con varios formatos."""
+    v = clean_date(v)
+    if not v:
+        return pd.NaT
 
-    # try DD/MM/YYYY
-    try:
-        return datetime.strptime(value, "%d/%m/%Y")
-    except:
-        pass
-
-    # try YYYY-MM-DD
-    try:
-        return datetime.strptime(value, "%Y-%m-%d")
-    except:
-        pass
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(v, fmt)
+        except:
+            pass
 
     return pd.NaT
 
-def smart_district_lookup(row):
-    # 1) exact from DISTRITO_S
-    raw = normalize(row.get("DISTRITO_S", ""))
-    for code, name in MADRID_DISTRICTS.items():
-        if normalize(name) in raw:
-            return code, name
+# ============================================================
+# DISTRITOS — Lógica completa
+# ============================================================
 
-    # 2) search in text fields
-    for field in ["DENOMINACI", "VIARIO_AFE", "DESCRIPCIO"]:
-        text = normalize(row.get(field, ""))
-        for code, name in MADRID_DISTRICTS.items():
-            if normalize(name) in text:
-                return code, name
+def resolve_district(raw_name):
+    """Devuelve (no_distrito, nombre_distrito) con 4 niveles de resolución."""
+    if not raw_name:
+        return "NA", "NA"
 
-    # 3) fuzzy match
-    text = normalize(
-        " ".join([
-            row.get("DENOMINACI", ""),
-            row.get("VIARIO_AFE", ""),
-            row.get("DESCRIPCIO", "")
-        ])
-    )
+    name = clean(raw_name)
 
-    district_names = [normalize(x) for x in MADRID_DISTRICTS.values()]
-    match = get_close_matches(text, district_names, n=1, cutoff=0.75)
+    # Nivel 1 — exacto
+    if name in MADRID_DISTRICTS:
+        return str(MADRID_DISTRICTS[name]), name
 
+    # Nivel 2 — alias
+    if name in ALIAS:
+        key = normalize_text(ALIAS[name])
+        return str(MADRID_DISTRICTS[key]), key
+
+    # Nivel 3 — fuzzy
+    candidates = list(MADRID_DISTRICTS.keys())
+    match = get_close_matches(name, candidates, n=1, cutoff=0.75)
     if match:
-        for code, name in MADRID_DISTRICTS.items():
-            if normalize(name) == match[0]:
-                return code, name
+        k = match[0]
+        return str(MADRID_DISTRICTS[k]), k
 
-    # 4) fallback final
-    return "00", "Sin asignar"
+    # Nivel 4 — fallback
+    return "NA", name
 
-# ================================
-# MAIN
-# ================================
+# ============================================================
+# MAIN LOGIC
+# ============================================================
 
 def main():
-    print("[INFO] Downloading dataset...")
-    r = requests.get(CSV_URL, timeout=60)
+    print("\n=== Generando datasheet OBRAS ===")
+
+    r = requests.get(CSV_URL, headers=HEADERS, timeout=TIMEOUT)
     r.raise_for_status()
 
     df = pd.read_csv(io.BytesIO(r.content), sep=";", dtype=str).fillna("")
 
-    # robust date parsing
+    # Fechas
     df["FECHA_INIC"] = df["FECHA_INIC"].apply(parse_date_safe)
     df["FECHA_FINA"] = df["FECHA_FINA"].apply(parse_date_safe)
 
-    # final selection of date WITHOUT overwriting valid FECHA_INIC
-    df["FECHA_USADA"] = df["FECHA_INIC"].combine_first(df["FECHA_FINA"])
-
-    df = df.dropna(subset=["FECHA_USADA"])
-
-    # === MODIFICACIÓN: Definir rango de fechas ===
-    fecha_inicio_filtro = datetime(2025, 7, 1)
-    fecha_fin_filtro = datetime(2025, 9, 30)
-    # =============================================
-
-    today = datetime.today()
+    # Elegir fecha válida
+    df["FECHA"] = df["FECHA_INIC"].combine_first(df["FECHA_FINA"])
+    df = df.dropna(subset=["FECHA"])
 
     rows = []
 
-    for _, row in df.iterrows():
-        fecha = row["FECHA_USADA"]
-        
-        # === MODIFICACIÓN: Aplicar filtro ===
-        if not (fecha_inicio_filtro <= fecha <= fecha_fin_filtro):
+    for _, r in df.iterrows():
+        fecha = r["FECHA"]
+        if fecha.year < 2022:
             continue
-        # ====================================
-
-        fecha_fin = row["FECHA_FINA"]
 
         dia = f"{fecha.day:02d}"
         mes = f"{fecha.month:02d}"
         año = str(fecha.year)
 
-        no_dist, nombre_dist = smart_district_lookup(row)
+        no_dist, nom_dist = resolve_district(
+            r.get("DISTRITO_S", "") or r.get("DENOMINACI", "")
+        )
 
-        terminada = False if pd.isna(fecha_fin) else (fecha_fin < today)
+        finished = False
+        if isinstance(r["FECHA_FINA"], datetime):
+            finished = r["FECHA_FINA"] < datetime.today()
 
         rows.append({
             "dia": dia,
             "mes": mes,
             "año": año,
             "no_distrito": no_dist,
-            "nombre_distrito": nombre_dist,
-            "terminada": str(terminada).lower()
+            "nombre_distrito": nom_dist,
+            "terminada": str(finished).lower()
         })
 
     out = pd.DataFrame(rows)
 
-    out.to_csv(OUT_CSV, sep=";", index=False, encoding="utf-8-sig")
+    out.to_csv(
+        OUT_FILE,
+        index=False,
+        sep=";",
+        encoding="utf-8-sig",
+        quoting=csv.QUOTE_NONE
+    )
 
-    print(f"[OK] CSV generated → {OUT_CSV.resolve()} ({len(out)} rows)")
-    print("[CHECK] Filter applied: Only July-Sept 2025 ✅")
-    print("[CHECK] ALL DATES = FECHA_INIC unless missing ✅")
-    print("[CHECK] NO district missing ✅")
+    print("\n[OK] Archivo generado →", OUT_FILE.resolve())
+    print("Filas:", len(out))
+    print(out.head(10))
+
 
 if __name__ == "__main__":
     main()
