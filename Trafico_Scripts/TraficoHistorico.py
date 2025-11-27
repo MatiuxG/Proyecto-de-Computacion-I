@@ -1,21 +1,27 @@
 import pandas as pd
 import sys
 import os
-
 # ==================== CONFIGURACIÓN DE RUTAS ====================
-BASE_DIR = "Trafico_Scripts"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 # Rutas de Entrada
 DIR_DATOS = os.path.join(BASE_DIR, "DatosHistoricos")
 DIR_DOCS = os.path.join(BASE_DIR, "DocumentacionNecesaria")
 
 # Archivos específicos
-ARCHIVOS_TRAFICO = ["07-2025.csv", "08-2025.csv", "09-2025.csv"]
+ARCHIVOS_TRAFICO = [
+    f for f in os.listdir(DIR_DATOS)
+    if f.lower().endswith(".csv")
+]
 ARCHIVO_UBICACION = "pmed_ubicacion_09-2025.csv"
 
 # Ruta de Salida
-DIR_RESULTADOS = os.path.join(BASE_DIR, "Trafico_Scripts", "Resultados")
+DIR_RESULTADOS = os.path.join(BASE_DIR, "Resultados")
 RUTA_SALIDA = os.path.join(DIR_RESULTADOS, "resultado.csv")
+
+
+
 
 # Diccionario de Distritos
 DISTRITOS = {
