@@ -72,7 +72,7 @@ STATION_FALLBACK = {
     "060": ("08", "FUENCARRAL EL PARDO"),
 }
 
-OUTPUT_DIR = Path("CalidadAire_Scripts/Resultados")
+OUTPUT_DIR = Path("CalidadAire_Scripts\Resultados")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 OUT_FILE = OUTPUT_DIR / "datasheet_calidad_aire.csv"

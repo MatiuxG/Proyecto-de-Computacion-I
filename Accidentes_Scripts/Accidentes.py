@@ -41,7 +41,7 @@ JSON_EXT = (".json", ".geojson")
 
 # --- RANGO DE FECHAS (2022 a 2024) ---
 DEFAULT_START = date_cls(2022, 1, 1)
-DEFAULT_END = date_cls(2024, 12, 31)
+DEFAULT_END = date_cls(2025, 10, 31)
 
 # --- Columnas finales solicitadas ---
 FINAL_COLUMNS = [

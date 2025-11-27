@@ -115,7 +115,7 @@ def main():
     
     # --- RANGO DE FECHAS SOLICITADO: 2022 a 2024 ---
     global_start = datetime(2022, 1, 1)
-    global_end = datetime(2024, 12, 31)
+    global_end = datetime(2025, 10, 31)
     
     print(f"[Info] Iniciando extracción desde {global_start.date()} hasta {global_end.date()}")
     

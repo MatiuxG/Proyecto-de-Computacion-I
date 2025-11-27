@@ -1,136 +1,207 @@
 import pandas as pd
 import os
-import glob
+import numpy as np
+
+def normalizar_texto(serie):
+    """
+    Normaliza los nombres de distrito: mayúsculas, quita tildes y reemplaza guiones por espacios.
+    Ayuda a cruzar datos como 'Fuencarral-El Pardo' con 'FUENCARRAL EL PARDO'.
+    """
+    if serie is None:
+        return serie
+    # Convertir a string y mayúsculas, eliminando espacios extra
+    s = serie.astype(str).str.upper().str.strip()
+    # Reemplazos de caracteres
+    reemplazos = {
+        'Á': 'A', 'É': 'E', 'Í': 'I', 'Ó': 'O', 'Ú': 'U', 'Ü': 'U',
+        '-': ' ',  # Reemplazar guiones por espacios
+        '  ': ' '  # Quitar dobles espacios si se generan
+    }
+    for car, rep in reemplazos.items():
+        s = s.str.replace(car, rep, regex=False)
+    return s
+
+def cargar_y_preparar(ruta, mapeo_cols, sep=';'):
+    """
+    Carga un CSV y renombra sus columnas según el mapeo proporcionado.
+    """
+    if not os.path.exists(ruta):
+        print(f"Advertencia: No se encontró el archivo en {ruta}")
+        return None
+    
+    try:
+        df = pd.read_csv(ruta, sep=sep)
+    except Exception as e:
+        print(f"Error al leer {ruta}: {e}")
+        return None
+    
+    # Renombrar columnas para estandarizar claves
+    df = df.rename(columns=mapeo_cols)
+    
+    # Estandarizar claves de fusión
+    if 'codigo_de_distrito' in df.columns:
+        # Convertir a numérico, forzando errores a NaN
+        df['codigo_de_distrito'] = pd.to_numeric(df['codigo_de_distrito'], errors='coerce')
+    
+    if 'nombre_de_distrito' in df.columns:
+        df['nombre_de_distrito'] = normalizar_texto(df['nombre_de_distrito'])
+        
+    # Asegurar que las columnas de fecha sean numéricas para el ordenamiento posterior
+    for col in ['dia', 'mes', 'año']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+    return df
 
 def main():
     # --- Configuración de rutas ---
     base_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(base_dir)
     
-    # Rutas relativas a los CSV
-    paths = {
-        "clima": os.path.join(base_dir, "..", "Clima_Scripts", "Clima_Scripts", "Resultados", "datasheet_clima.csv"),
-        "accidentes": os.path.join(base_dir, "..", "Accidentes_Scripts", "Accidentes_Scripts", "Resultados", "datasheet_accidentes.csv"),
-        "aire": os.path.join(base_dir, "..", "CalidadAire_Scripts", "CalidadAire_Scripts", "Resultados", "datasheet_calidad_aire_agregado.csv"),
-        "emergencias": os.path.join(base_dir, "..", "Emergencias_Scripts", "Emergencias_Scripts", "Resultados", "datasheet_emergencias.csv"),
-        "obras": os.path.join(base_dir, "..", "Obras_Scripts", "Obras_Scripts", "Resultados", "datasheet_plazo_ejecucion.csv"),
-        "trafico": os.path.join(base_dir, "..", "Trafico_Scripts", "Trafico_Scripts", "Resultados", "resultado.csv")
+    # Definición de rutas a los archivos CSV
+    rutas = {
+        "clima": os.path.join(parent_dir, "Clima_Scripts", "Resultados", "datasheet_clima.csv"),
+        "accidentes": os.path.join(parent_dir, "Accidentes_Scripts", "Resultados", "datasheet_accidentes.csv"),
+        "aire": os.path.join(parent_dir, "CalidadAire_Scripts", "Resultados", "datasheet_calidad_aire.csv"),
+        "emergencias": os.path.join(parent_dir, "Emergencias_Scripts", "Resultados", "datasheet_emergencias.csv"),
+        "obras": os.path.join(parent_dir, "Obras_Scripts", "Resultados", "datasheet_obras.csv"),
+        "trafico": os.path.join(parent_dir, "Trafico_Scripts", "Resultados", "resultado.csv")
     }
 
-    # Columnas clave para la unión
-    merge_keys = ['Dia', 'Mes', 'Año', 'Codigo_de_distrito', 'nombre_de_distrito']
-
-    # --- Funciones de ayuda ---
-    def load_and_standardize(name, filepath, key_mapping, columns_to_keep):
-        """
-        Carga un CSV, renombra columnas clave, estandariza textos y filtra las columnas deseadas.
-        """
-        print(f"Cargando {name} desde: {filepath}")
-        if not os.path.exists(filepath):
-            print(f"  [AVISO] No se encontró el archivo para {name}. Se omitirá.")
-            return None
-        
-        try:
-            df = pd.read_csv(filepath, sep=';', dtype=str)
-        except:
-            df = pd.read_csv(filepath, sep=',', dtype=str)
-
-        # Renombrar columnas
-        df = df.rename(columns=key_mapping)
-
-        # 1. Estandarizar Código de distrito (01, 02...)
-        if 'Codigo_de_distrito' in df.columns:
-            df['Codigo_de_distrito'] = df['Codigo_de_distrito'].apply(lambda x: str(x).strip().zfill(2) if pd.notna(x) else x)
-        
-        # 2. Estandarizar Nombre de distrito (quitar espacios y poner en formato Título)
-        if 'nombre_de_distrito' in df.columns:
-            df['nombre_de_distrito'] = df['nombre_de_distrito'].astype(str).str.strip().str.title()
-
-        # Asegurar columnas numéricas de fecha
-        for col in ['Dia', 'Mes', 'Año']:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
-
-        # Filtrar columnas
-        cols_existentes = [c for c in (merge_keys + columns_to_keep) if c in df.columns]
-        df = df[cols_existentes]
-        
-        return df
-
-    # --- 1. Carga de Datos ---
-
-    # A. CLIMA
-    cols_clima = [
-        'Temp_Media_°C','Temp_Max_°C','Temp_Min_°C','Hora_Temp_Max','Hora_Temp_Min',
-        'Precipitacion_mm','Vel_Viento_Media_m/s', 'Presion_Max_hPa', 'Presion_Min_hPa'
-    ]
-    map_clima = {'district_code': 'Codigo_de_distrito', 'district_name': 'nombre_de_distrito'}
-    df_clima = load_and_standardize("Clima", paths["clima"], map_clima, cols_clima)
-
-    # B. ACCIDENTES
-    cols_acc = ['total_de_accidentes']
-    map_acc = {'district_code': 'Codigo_de_distrito', 'district_name': 'nombre_de_distrito'}
-    df_acc = load_and_standardize("Accidentes", paths["accidentes"], map_acc, cols_acc)
-
-    # C. CALIDAD AIRE
-    cols_aire = ['Oxidosde nitrogeno', 'Particulas']
+    # --- Mapeo de columnas para estandarizar nombres ---
+    map_clima = {
+        'Dia': 'dia', 'Mes': 'mes', 'Año': 'año', 
+        'district_code': 'codigo_de_distrito', 'district_name': 'nombre_de_distrito'
+    }
+    
+    map_acc = {
+        'Dia': 'dia', 'Mes': 'mes', 'Año': 'año', 
+        'district_code': 'codigo_de_distrito', 'district_name': 'nombre_de_distrito'
+    }
+    
     map_aire = {
-        'dia': 'Dia', 'mes': 'Mes', 'año': 'Año', 
-        'numero de distrito': 'Codigo_de_distrito', 'nombre del distrito': 'nombre_de_distrito'
+        'no_distrito': 'codigo_de_distrito', 'nombre_distrito': 'nombre_de_distrito'
     }
-    df_aire = load_and_standardize("Calidad Aire", paths["aire"], map_aire, cols_aire)
-
-    # D. EMERGENCIAS
-    cols_emerg = ['cantidad_emergencias']
+    
     map_emerg = {
-        'dia': 'Dia', 'mes': 'Mes', 'año': 'Año', 
-        'no_distrito': 'Codigo_de_distrito', 'nombre_distrito': 'nombre_de_distrito'
+        'no_distrito': 'codigo_de_distrito', 'nombre_distrito': 'nombre_de_distrito'
     }
-    df_emerg = load_and_standardize("Emergencias", paths["emergencias"], map_emerg, cols_emerg)
-
-    # E. OBRAS (Opcional, descomentar si se requiere)
-    # df_obras = load_and_standardize("Obras", paths["obras"], map_obras, cols_obras)
-
-    # F. TRÁFICO (Nueva sección agregada)
-    cols_trafico = ['trafico_medio']
+    
+    map_obras = {
+        'no_distrito': 'codigo_de_distrito', 'nombre_distrito': 'nombre_de_distrito',
+        'terminada': 'Obra_terminada'
+    }
+    
     map_trafico = {
-        'dia': 'Dia', 
-        'mes': 'Mes', 
-        'año': 'Año', 
-        'id_distrito': 'Codigo_de_distrito', 
-        'nombre_distrito': 'nombre_de_distrito'
+        'id_distrito': 'codigo_de_distrito', 'nombre_distrito': 'nombre_de_distrito'
     }
-    df_trafico = load_and_standardize("Tráfico", paths["trafico"], map_trafico, cols_trafico)
 
-    # --- 2. Unión de Datasets ---
+    # --- Carga de Datos ---
+    print("Cargando datasets...")
+    df_clima = cargar_y_preparar(rutas["clima"], map_clima)
+    df_acc = cargar_y_preparar(rutas["accidentes"], map_acc)
+    df_aire = cargar_y_preparar(rutas["aire"], map_aire)
+    df_emerg = cargar_y_preparar(rutas["emergencias"], map_emerg)
+    df_obras = cargar_y_preparar(rutas["obras"], map_obras)
+    df_trafico = cargar_y_preparar(rutas["trafico"], map_trafico)
+
+    # --- Unificación (Merge) ---
+    print("Unificando datasets...")
     
-    # Se añade df_trafico a la lista para el merge
-    dfs = [d for d in [df_clima, df_acc, df_aire, df_emerg, df_trafico] if d is not None]
-
-    if not dfs:
-        print("No se cargó ningún dataset. Finalizando.")
-        return
-
-    print("Uniendo datasets...")
-    df_final = dfs[0]
-    for i in range(1, len(dfs)):
-        df_final = pd.merge(df_final, dfs[i], on=merge_keys, how='outer')
-
-    # --- 3. Limpieza y Guardado ---
-
-    df_final = df_final.fillna(0)
-
-    if all(col in df_final.columns for col in ['Año', 'Mes', 'Dia', 'Codigo_de_distrito']):
-        df_final = df_final.sort_values(by=['Año', 'Mes', 'Dia', 'Codigo_de_distrito'])
-
-    output_dir = os.path.join(base_dir, "..", "Resultados")
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    output_path = os.path.join(output_dir, "dataset_final.csv")
+    merge_keys = ['dia', 'mes', 'año', 'codigo_de_distrito', 'nombre_de_distrito']
     
-    print(f"Guardando resultado en: {output_path}")
-    df_final.to_csv(output_path, index=False, sep=';', encoding='utf-8-sig')
-    print("¡Proceso completado!")
+    # Usar Clima como base inicial si existe, sino crear un DataFrame vacío con las keys
+    if df_clima is not None:
+        df_final = df_clima
+    else:
+        df_final = pd.DataFrame(columns=merge_keys) 
+
+    if df_acc is not None:
+        df_final = pd.merge(df_final, df_acc, on=merge_keys, how='outer')
+    if df_aire is not None:
+        df_final = pd.merge(df_final, df_aire, on=merge_keys, how='outer')
+    if df_emerg is not None:
+        df_final = pd.merge(df_final, df_emerg, on=merge_keys, how='outer')
+    if df_obras is not None:
+        df_final = pd.merge(df_final, df_obras, on=merge_keys, how='outer')
+    if df_trafico is not None:
+        df_final = pd.merge(df_final, df_trafico, on=merge_keys, how='outer')
+
+    # --- Filtrado de Distritos Excluidos ---
+    print("Filtrando zonas prohibidas (5, 6, 7, 9, 10, 11, 12, 17)...")
+    distritos_excluidos = [5, 6, 7, 9, 10, 11, 12, 17]
+    
+    # Aseguramos que sea numérico y rellenamos nulos temporalmente con -1 para no borrar filas sin distrito si las hubiera
+    df_final['codigo_de_distrito'] = pd.to_numeric(df_final['codigo_de_distrito'], errors='coerce').fillna(-1)
+    
+    # Aplicar filtro
+    df_final = df_final[~df_final['codigo_de_distrito'].isin(distritos_excluidos)]
+
+    # --- Limpieza y Selección de Columnas ---
+    
+    columnas_finales_orden = [
+        'dia', 'mes', 'año', 'codigo_de_distrito', 'nombre_de_distrito',
+        'Temp_Media_°C', 'Temp_Max_°C', 'Temp_Min_°C', 
+        'Hora_Temp_Max', 'Hora_Temp_Min', 'Precipitacion_mm', 
+        'Vel_Viento_Media_m/s', 'Racha_Max_m/s', 'Presion_Max_hPa', 'Presion_Min_hPa',
+        'total_de_accidentes', 
+        'valor_calidad_aire', 
+        'cantidad_emergencias', 
+        'Obra_terminada', 
+        'trafico_medio'
+    ]
+    
+    # Lista de columnas que convertiremos a INT (todas las numéricas)
+    # Se excluyen 'Hora_Temp_Max' y 'Hora_Temp_Min' si son textos tipo "14:30". 
+    # Si son números, se convertirán. Si no, pandas fallará al hacer astype(int), así que usamos try/except.
+    cols_numericas_int = [
+        'dia', 'mes', 'año', 'codigo_de_distrito',
+        'Temp_Media_°C', 'Temp_Max_°C', 'Temp_Min_°C', 
+        'Precipitacion_mm', 'Vel_Viento_Media_m/s', 'Racha_Max_m/s', 
+        'Presion_Max_hPa', 'Presion_Min_hPa',
+        'total_de_accidentes', 
+        'valor_calidad_aire', 
+        'cantidad_emergencias', 
+        'trafico_medio'
+    ]
+
+    # Crear columnas faltantes con NaN
+    for col in columnas_finales_orden:
+        if col not in df_final.columns:
+            df_final[col] = np.nan
+
+    # --- Conversión a enteros (int) ---
+    print("Convirtiendo valores numéricos a enteros...")
+    
+    for col in cols_numericas_int:
+        if col in df_final.columns:
+            # Rellenar NaN con 0
+            df_final[col] = df_final[col].fillna(0)
+            try:
+                # Convertir a int
+                df_final[col] = df_final[col].astype(int)
+            except Exception as e:
+                print(f"No se pudo convertir {col} a int: {e}")
+
+    # Seleccionar y reordenar columnas
+    df_final = df_final[columnas_finales_orden]
+    
+    # --- Ordenar Cronológicamente ---
+    print("Ordenando datos...")
+    df_final = df_final.sort_values(by=['año', 'mes', 'dia'])
+    
+    # --- Guardado ---
+    output_folder = os.path.join(parent_dir, "Resultados")
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+        
+    output_file = os.path.join(output_folder, "dataset_unificado.csv")
+    
+    # Guardar con ; como separador
+    df_final.to_csv(output_file, sep=';', index=False, encoding='utf-8')
+    print(f"Proceso finalizado. Dataset guardado en: {output_file}")
+    # Mostrar una muestra para verificar
+    print(df_final.head())
 
 if __name__ == "__main__":
     main()
