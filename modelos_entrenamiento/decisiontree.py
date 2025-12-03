@@ -14,21 +14,14 @@ from sklearn.tree import DecisionTreeClassifier #importar el clasificador de ár
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix #importar la función para calcular la precisión del modelo
 from dataclasses import dataclass#para crear clases de datos
 from joblib import dump, load #para guardar y cargar modelos entrenados
-
+from typing import Tuple, Dict, Any, List, Optional #tipado para escribir bonico :)
 #cosas de la UI desde donde traeremos los datos, no usaremos input sino que lo haremos desde la interfaz
 DATA_PATH = '' #esto habrá que cambiarlo por la ruta del archivo en la UI
 
 #cargar datos
 data = pandas.read_csv(DATA_PATH) #cargar el conjunto de datos desde un archivo CSV
 
-#el modelo tiene que saber que target ha eleigo el usuario :
-"""Targets soportados:
-- "accidentes"  -> etiqueta accidente_riesgo
-- "atascos"     -> etiqueta atasco_riesgo
-- "emergencias" -> etiqueta emergencia_riesgo
-- "aire"        -> etiqueta aire_riesgo"""
-
-#columnas que usaremos
+#columnas que usaremos (BASES DEL CV)
 COLUMNAS_BASE=["dia",
     "mes",
     "codigo_de_distrito",
@@ -46,3 +39,27 @@ COLUMNAS_BASE=["dia",
     "valor_calidad_aire",
     "trafico_medio",
 ]
+
+#el modelo tiene que saber que target ha eleigo el usuario :
+"""Targets soportados:
+- "accidentes"  -> etiqueta accidente_riesgo
+- "atascos"     -> etiqueta atasco_riesgo
+- "emergencias" -> etiqueta emergencia_riesgo
+- "aire"        -> etiqueta aire_riesgo"""
+
+TARGETS_CONFIG={ "accidentes": {
+        "label": "accidente_riesgo", #etiqueta objetivo para accidentes
+        "leakage_feature": "total_de_accidentes", #col que borramos para evitar data leakage
+    },"atascos": {
+        "label": "atasco_riesgo",
+        "leakage_feature": "trafico_medio",
+    },
+    "emergencias": {
+        "label":"emergencia_riesgo",
+        "leakage_feature": "cantidad_emergencias",
+    },
+    "aire": {
+        "label": "aire_riesgo",
+        "leakage_feature": "valor_calidad_aire",
+    },
+}
