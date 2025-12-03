@@ -6,15 +6,43 @@
 import sklearn
 import pandas
 import numpy
-
+import dataclasses
+import joblib
 #todo el tema del modelo 
 from sklearn.model_selection import train_test_split #dividir el conjunto de datos en conjuntos de entrenamiento y prueba
 from sklearn.tree import DecisionTreeClassifier #importar el clasificador de árbol de decisión
-from sklearn.metrics import accuracy_score #importar la función para calcular la precisión del modelo
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix #importar la función para calcular la precisión del modelo
+from dataclasses import dataclass#para crear clases de datos
+from joblib import dump, load #para guardar y cargar modelos entrenados
 
-#cosas de la UI desde donde traeremos los datos
-DATA_PATH = ''
+#cosas de la UI desde donde traeremos los datos, no usaremos input sino que lo haremos desde la interfaz
+DATA_PATH = '' #esto habrá que cambiarlo por la ruta del archivo en la UI
 
 #cargar datos
 data = pandas.read_csv(DATA_PATH) #cargar el conjunto de datos desde un archivo CSV
 
+#el modelo tiene que saber que target ha eleigo el usuario :
+"""Targets soportados:
+- "accidentes"  -> etiqueta accidente_riesgo
+- "atascos"     -> etiqueta atasco_riesgo
+- "emergencias" -> etiqueta emergencia_riesgo
+- "aire"        -> etiqueta aire_riesgo"""
+
+#columnas que usaremos
+COLUMNAS_BASE=["dia",
+    "mes",
+    "codigo_de_distrito",
+    "nombre_de_distrito",
+    "Precipitacion_mm",
+    "Presion_Max_hPa",
+    "Presion_Min_hPa",
+    "Temp_Max_ºC",
+    "Temp_Media_ºC",
+    "Temp_Min_ºC",
+    "Racha_Max_m/s",
+    "Vel_Viento_Media_m/s",
+    "total_de_accidentes",
+    "cantidad_emergencias",
+    "valor_calidad_aire",
+    "trafico_medio",
+]
