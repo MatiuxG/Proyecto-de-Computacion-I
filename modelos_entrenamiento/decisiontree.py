@@ -15,12 +15,6 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 from dataclasses import dataclass#para crear clases de datos
 from joblib import dump, load #para guardar y cargar modelos entrenados
 from typing import Tuple, Dict, Any, List, Optional #tipado para escribir bonico :)
-#cosas de la UI desde donde traeremos los datos, no usaremos input sino que lo haremos desde la interfaz
-DATA_PATH = '' #esto habrá que cambiarlo por la ruta del archivo en la UI
-
-#cargar datos
-data = pandas.read_csv(DATA_PATH) #cargar el conjunto de datos desde un archivo CSV
-
 #columnas que usaremos (BASES DEL CV)
 COLUMNAS_BASE=["dia",
     "mes",
@@ -63,3 +57,26 @@ TARGETS_CONFIG={ "accidentes": {
         "leakage_feature": "valor_calidad_aire",
     },
 }
+
+def load_data(data_path): #la ui nos pasa la ruta del csv
+    df=pandas.read_csv(data_path, sep=";", engine="python") #cargamos el csv con pandas, el sep es la forma en la que estan separados los datos y el engine es para evitar errores
+    return df #devolvemos el dataframe
+
+def load_and_prepare_data(data_path, target):
+
+    if target not in TARGETS_CONFIG: #miramos si el target es valido
+        raise ValueError(f"Target '{target}' no soportado. Targets soportados: {list(TARGETS_CONFIG.keys())}")
+    
+    df=load_data(data_path) #cargamos los datos
+    leakage_feature=TARGETS_CONFIG[target]["leakage_feature"] #obtenemos la columna que causa data leakage
+    label_col=TARGETS_CONFIG[target]["label"] #obtenemos la columna objetivo
+
+    if label_col not in df.columns: #miramos si la columna objetivo esta en el dataframe
+        raise ValueError(f"La columna objetivo '{label_col}' no se encuentra en los datos.")
+    
+    
+    feature_cols = [col for col in COLUMNAS_BASE if col in df.columns]
+
+
+    
+
