@@ -74,8 +74,38 @@ def load_and_prepare_data(data_path, target):
     if label_col not in df.columns: #miramos si la columna objetivo esta en el dataframe
         raise ValueError(f"La columna objetivo '{label_col}' no se encuentra en los datos.")
     
-    
     feature_cols = [col for col in COLUMNAS_BASE if col in df.columns]
+
+    if len(feature_cols) ==0: #miramos si las columnas base estan en el dataframe
+        raise ValueError("Ninguna de las columnas base se encuentra en los datos.")
+    if leakage_feature in feature_cols: #si la columna que causa data leakage esta en las columnas base, la eliminamos
+        feature_cols.remove(leakage_feature)
+
+    y=df[label_col] #etiqueta objetivo
+    x=df[feature_cols].copy() #caracteristicas de entrada 
+
+    numeric_cols=[]
+    categorical_cols=[]
+    for col in feature_cols: #miramos las columnas que son numericas
+        if pandas.api.types.is_numeric_dtype(x[col]):
+            numeric_cols.append(col)
+        else:
+            categorical_cols.append(col)
+
+    for col in categorical_cols: #rellenamos los nans de las categóricas con la moda o "desconocido" si toda la columna es nula
+        if x[col].isna().all():
+            x[col] = x[col].fillna("desconocido")
+        else:
+            mode_value = x[col].mode(dropna=True)
+            if not mode_value.empty:
+                x[col] = x[col].fillna(mode_value.iloc[0])
+            else:
+                x[col] = x[col].fillna("desconocido")
+    X = pandas.get_dummies(x, columns=categorical_cols, drop_first=False) #convertir categóricas en números con get_dummies
+
+    return X, y        
+    
+
 
 
     
