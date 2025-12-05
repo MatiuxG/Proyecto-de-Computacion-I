@@ -139,19 +139,131 @@ def entrenamiento_arbol_de_decision(ruta_csv, tipo_incidente, ruta_modelo_salida
     class_report=classification_report(y_test, y_pred, output_dict=True) #informe de clasificación como diccionario 
     conf_matrix=confusion_matrix(y_test, y_pred) #matriz de confusión
 
-    dump(modelo_arbol, ruta_modelo_salida) #guardamos el modelo entrenado en la ruta especificada
+    # guardamos también las columnas de entrada usadas por el modelo
+    columnas_modelo = list(X.columns)
 
-    metrics={ #devolvemos las métricas del modelo 
+    # preparamos un "paquete" con el modelo y metadatos necesarios para predecir después
+    modelo_guardado = {
+        "modelo": modelo_arbol,
+        "tipo_incidente": tipo_incidente,
+        "columnas_entrada": columnas_modelo,
+    }
+
+    dump(modelo_guardado, ruta_modelo_salida)  # guardamos el paquete completo
+
+    metrics = {  # devolvemos las métricas del modelo 
         "accuracy": accuracy,
         "classification_report": class_report,
-        "confusion_matrix": conf_matrix.tolist(), #convertimos la matriz de confusión a lista para que sea serializable
+        "confusion_matrix": conf_matrix.tolist(),
         "target": tipo_incidente,
         "n_samples": len(X),
         "n_features": X.shape[1],
     }
     return metrics
 
+def preparar_datos_para_prediccion(ruta_csv, tipo_incidente, columnas_entrada_modelo):
+    #se prepara los datos de un csv nuevo para hacer predicciones con un modelo que ya este entrenado
+    #solo usaremos las columnas base
 
+    if tipo_incidente not in TARGETS_CONFIG: #miramos si el target es valido
+        raise ValueError(f"Target '{tipo_incidente}' no soportado. Targets soportados: {list(TARGETS_CONFIG.keys())}")
+    
+    df=load_data(ruta_csv) #cargamos los datos
+    leakage_feature=TARGETS_CONFIG[tipo_incidente]["leakage_feature"] #misma lógica que en la preparación de datos para entrenamiento
+    columnas_entrada = [col for col in COLUMNAS_BASE if col in df.columns]
+
+    if leakage_feature in columnas_entrada: #si la columna que causa data leakage esta en las columnas base, la eliminamos
+        columnas_entrada.remove(leakage_feature)
+
+    x=df[columnas_entrada].copy() #caracteristicas de entrada
+    columnas_numericas=[]
+    columnas_categoricas=[]
+
+    for col in columnas_entrada: #miramos las columnas que son numericas
+        if pandas.api.types.is_numeric_dtype(x[col]):
+            columnas_numericas.append(col)
+        else:
+            columnas_categoricas.append(col)
+
+    # rellenamos nulos en numéricas
+    for col in columnas_numericas:
+        if x[col].isna().all():
+            x[col] = x[col].fillna(0)
+        else:
+            x[col] = x[col].fillna(x[col].mean())
+
+    # rellenamos nulos en categóricas
+    for col in columnas_categoricas:
+        if x[col].isna().all():
+            x[col] = x[col].fillna("desconocido")
+        else:
+            mode_value = x[col].mode(dropna=True)
+            if not mode_value.empty:
+                x[col] = x[col].fillna(mode_value.iloc[0])
+            else:
+                x[col] = x[col].fillna("desconocido")
+
+    # get_dummies igual que en entrenamiento
+    X_nuevo = pandas.get_dummies(x, columns=columnas_categoricas, drop_first=False)
+
+    # alineamos las columnas con las que usaba el modelo entrenado
+    X_nuevo = X_nuevo.reindex(columns=columnas_entrada_modelo, fill_value=0)
+
+    # columnas identificadoras para devolver en el resultado (si existen)
+    columnas_id = ["dia", "mes", "codigo_de_distrito", "nombre_de_distrito"]
+    columnas_id_presentes = [c for c in columnas_id if c in df.columns]
+
+    if len(columnas_id_presentes) > 0:
+        df_identificadores = df[columnas_id_presentes].copy()
+    else:
+        df_identificadores = pandas.DataFrame(index=df.index)
+
+    return X_nuevo, df_identificadores
+    
+
+def predecir_incidentes(ruta_modelo, ruta_csv_nuevos_datos):
+    #ruta_modelo: ruta al modelo entrenado
+    #ruta_csv_nuevos_datos: ruta al csv con los nuevos datos para pre
+    #TIENE QUE DEVOLVER LAS PREDICCIONES EN FORMATO BONICO
+    modelo_guardado = load(ruta_modelo)
+
+    if not isinstance(modelo_guardado, dict) or "modelo" not in modelo_guardado:
+        raise ValueError("El archivo de modelo no tiene el formato esperado.")
+
+    modelo_arbol = modelo_guardado["modelo"]
+    tipo_incidente = modelo_guardado["tipo_incidente"]
+    columnas_entrada_modelo = modelo_guardado["columnas_entrada"]
+
+    X_nuevo, df_identificadores = preparar_datos_para_prediccion(
+        ruta_csv_nuevos_datos,
+        tipo_incidente,
+        columnas_entrada_modelo
+    )
+
+    predicciones = modelo_arbol.predict(X_nuevo)
+
+    #intentamos sacar las probabilidades (si el modelo nos deja)
+    probabilidades_alto = None
+    if hasattr(modelo_arbol, "predict_proba"):
+        try:
+            proba = modelo_arbol.predict_proba(X_nuevo)
+            # si es binaria, cogemos la probabilidad de la clase "1"
+            if proba.shape[1] == 2:
+                probabilidades_alto = proba[:, 1]
+            else:
+                # multi-clase: usamos la probabilidad máxima
+                probabilidades_alto = proba.max(axis=1)
+        except Exception:
+            probabilidades_alto = None
+
+    #hacemos el DataFrame de salida
+    resultado = df_identificadores.copy()
+    resultado["prediccion"] = predicciones
+
+    if probabilidades_alto is not None:
+        resultado["probabilidad_alto"] = probabilidades_alto
+
+    return resultado
 
 
     
