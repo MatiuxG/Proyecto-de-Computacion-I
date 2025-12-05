@@ -2,6 +2,11 @@
 
 #Decision Tree Classifier: un árbol de decisión es un modelo de aprendizaje supervisado utilizado tanto para clasificación como para regresión. Funciona dividiendo los datos en subconjuntos basados en características específicas, creando una estructura similar a un árbol donde cada nodo representa una característica, cada rama representa una decisión y cada hoja representa un resultado o clase.
 
+
+# PARA SABER EN GENERAL:
+# x significa todo lo que el modelo usa para predecir (características), lo que usa como entrada
+# y significa la etiqueta que el modelo tiene que predecir (target)
+
 #librerias importadas
 import sklearn
 import pandas
@@ -62,37 +67,43 @@ def load_data(data_path): #la ui nos pasa la ruta del csv
     df=pandas.read_csv(data_path, sep=";", engine="python") #cargamos el csv con pandas, el sep es la forma en la que estan separados los datos y el engine es para evitar errores
     return df #devolvemos el dataframe
 
-def load_and_prepare_data(data_path, target):
+def load_and_prepare_data(ruta_csv, tipo_incidentes):
 
-    if target not in TARGETS_CONFIG: #miramos si el target es valido
-        raise ValueError(f"Target '{target}' no soportado. Targets soportados: {list(TARGETS_CONFIG.keys())}")
+    if tipo_incidentes not in TARGETS_CONFIG: #miramos si el target es valido
+        raise ValueError(f"Target '{tipo_incidentes}' no soportado. Targets soportados: {list(TARGETS_CONFIG.keys())}")
     
-    df=load_data(data_path) #cargamos los datos
-    leakage_feature=TARGETS_CONFIG[target]["leakage_feature"] #obtenemos la columna que causa data leakage
-    label_col=TARGETS_CONFIG[target]["label"] #obtenemos la columna objetivo
+    df=load_data(ruta_csv) #cargamos los datos
+    leakage_feature=TARGETS_CONFIG[tipo_incidentes]["leakage_feature"] #obtenemos la columna que causa data leakage
+    label_col=TARGETS_CONFIG[tipo_incidentes]["label"] #obtenemos la columna objetivo
 
     if label_col not in df.columns: #miramos si la columna objetivo esta en el dataframe
         raise ValueError(f"La columna objetivo '{label_col}' no se encuentra en los datos.")
     
-    feature_cols = [col for col in COLUMNAS_BASE if col in df.columns]
+    columnas_entrada = [col for col in COLUMNAS_BASE if col in df.columns]
 
-    if len(feature_cols) ==0: #miramos si las columnas base estan en el dataframe
+    if len(columnas_entrada) ==0: #miramos si las columnas base estan en el dataframe
         raise ValueError("Ninguna de las columnas base se encuentra en los datos.")
-    if leakage_feature in feature_cols: #si la columna que causa data leakage esta en las columnas base, la eliminamos
-        feature_cols.remove(leakage_feature)
+    if leakage_feature in columnas_entrada: #si la columna que causa data leakage esta en las columnas base, la eliminamos
+        columnas_entrada.remove(leakage_feature)
 
     y=df[label_col] #etiqueta objetivo
-    x=df[feature_cols].copy() #caracteristicas de entrada 
+    x=df[columnas_entrada].copy() #caracteristicas de entrada 
 
-    numeric_cols=[]
-    categorical_cols=[]
-    for col in feature_cols: #miramos las columnas que son numericas
+    columnas_numericas=[]
+    columnas_categoricas=[]
+    for col in columnas_entrada: #miramos las columnas que son numericas
         if pandas.api.types.is_numeric_dtype(x[col]):
-            numeric_cols.append(col)
+            columnas_numericas.append(col)
         else:
-            categorical_cols.append(col)
+            columnas_categoricas.append(col)
 
-    for col in categorical_cols: #rellenamos los nans de las categóricas con la moda o "desconocido" si toda la columna es nula
+    for col in columnas_numericas: #rellenamos los nans de las numericas con la media
+        if x[col].isna().all():
+            x[col] = x[col].fillna(0) #si toda la columna es nula, rellenamos con 0
+        else:
+            x[col] = x[col].fillna(x[col].mean()) #si no, rellenamos con la media
+
+    for col in columnas_categoricas: #rellenamos los nans de las categóricas con la moda o "desconocido" si toda la columna es nula
         if x[col].isna().all():
             x[col] = x[col].fillna("desconocido")
         else:
@@ -101,10 +112,45 @@ def load_and_prepare_data(data_path, target):
                 x[col] = x[col].fillna(mode_value.iloc[0])
             else:
                 x[col] = x[col].fillna("desconocido")
-    X = pandas.get_dummies(x, columns=categorical_cols, drop_first=False) #convertir categóricas en números con get_dummies
+    X = pandas.get_dummies(x, columns=columnas_categoricas, drop_first=False) #convertir categóricas en números con get_dummies
 
     return X, y        
-    
+
+def entrenamiento_arbol_de_decision(ruta_csv, tipo_incidente, ruta_modelo_salida): 
+    #ruta_csv: ruta al csv con los datos
+    #tipo_incidente: objetivo a predecir
+    #ruta_modelo_salida: ruta donde guardar el modelo entrenado (lo pondremos en la ui)
+    #TIENE QUE DEVOLVER LAS METRICAS CON LA INFO DEL MODELO
+
+    X, y=load_and_prepare_data(ruta_csv, tipo_incidente) #cargamos y preparamos los datos
+    X_train, X_test, y_train, y_test=train_test_split(X, y, test_size=0.2, random_state=42) #dividimos los datos en entrenamiento y prueba (80% entrenamiento, 20% prueba), random_state para reproducibilidad x e y son las caracteristicas y etiquetas
+    #creamos el modelo
+    modelo_arbol=DecisionTreeClassifier(random_state=42, criterion="gini", max_depth=10, min_samples_split=2)#creamos el modelo de árbol de decisión
+    #CARCTERÍSTICAS DEL MODELO:
+    #random_state=42: para reproducibilidad
+    #criterion="gini": criterio para medir la calidad de una división (índice de
+    #max_depth=10: profundidad máxima del árbol
+    #min_samples_split=2: número mínimo de muestras necesarias para dividir un nodo interno
+
+    modelo_arbol.fit(X_train, y_train) #entrenamos el modelo con los datos de entrenamiento
+    y_pred=modelo_arbol.predict(X_test) #hacemos predicciones con los datos de prueba
+
+    accuracy=accuracy_score(y_test, y_pred) #calculamos la precisión del modelo
+    class_report=classification_report(y_test, y_pred, output_dict=True) #informe de clasificación como diccionario 
+    conf_matrix=confusion_matrix(y_test, y_pred) #matriz de confusión
+
+    dump(modelo_arbol, ruta_modelo_salida) #guardamos el modelo entrenado en la ruta especificada
+
+    metrics={ #devolvemos las métricas del modelo 
+        "accuracy": accuracy,
+        "classification_report": class_report,
+        "confusion_matrix": conf_matrix.tolist(), #convertimos la matriz de confusión a lista para que sea serializable
+        "target": tipo_incidente,
+        "n_samples": len(X),
+        "n_features": X.shape[1],
+    }
+    return metrics
+
 
 
 
