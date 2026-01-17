@@ -1,3 +1,6 @@
 **/__pycache__/
 **/Resultados/
-Resultados/
+**/DatosHistoricos/
+**/DocumentacionNecesaria/
+.venv/
+modelos_guardados/
