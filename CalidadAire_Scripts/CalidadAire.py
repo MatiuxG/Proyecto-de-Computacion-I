@@ -1,50 +1,23 @@
-# -*- coding: utf-8 -*-
-"""
-Datasheet unificado de Calidad del Aire (Madrid)
-Versión profesional Modo B con catálogo de estaciones.
-- SIN NA en distritos (excepto estaciones desconocidas)
-- Expansión diaria desde datasets mensuales
-- Compatible con RapidMiner
-"""
-
-# ============================================================
-# IMPORTS
-# ============================================================
-
 import csv
 import io
 import re
 import unicodedata
-from pathlib import Path
-from datetime import date as date_cls
-
 import requests
 import pandas as pd
+from pathlib import Path
+from datetime import date as date_cls
 from bs4 import BeautifulSoup
-
-
-# ============================================================
-# CONFIG
-# ============================================================
 
 HEADERS = {
     "User-Agent": "MateoAirScraper/2.0",
     "Accept": "*/*"
 }
-
-PAGES = [
-    # Ficha original
-    "https://datos.madrid.es/sites/v/index.jsp?vgnextoid=aecb88a7e2b73410VgnVCM2000000c205a0aRCRD"
-]
-
-# Catálogos oficiales
+PAGES = ["https://datos.madrid.es/sites/v/index.jsp?vgnextoid=aecb88a7e2b73410VgnVCM2000000c205a0aRCRD"]
 STATION_CATALOG_CANDIDATES = [
     "https://datos.madrid.es/egob/catalogo/201210-0-estaciones-calidad-aire.csv",
     "https://datos.madrid.es/egob/catalogo/201210-0-red-calidad-aire-estaciones.csv",
     "https://datos.madrid.es/egob/catalogo/201210-0-red-vigilancia-calidad-aire-estaciones.csv",
 ]
-
-# Fallback completo (del script original)
 STATION_FALLBACK = {
     "004": ("09", "MONCLOA ARAVACA"),
     "008": ("04", "SALAMANCA"),
@@ -74,17 +47,12 @@ STATION_FALLBACK = {
 
 OUTPUT_DIR = Path("CalidadAire_Scripts\Resultados")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
 OUT_FILE = OUTPUT_DIR / "datasheet_calidad_aire.csv"
 
 
-# ============================================================
-# NORMALIZATION (MODO B)
-# ============================================================
-
 def normalize_text(s):
     if not s:
-        return "NA"
+        return "NA" #FLAG
     s = str(s).upper()
     s = unicodedata.normalize("NFD", s)
     s = "".join(c for c in s if unicodedata.category(c) != "Mn")
@@ -94,10 +62,6 @@ def normalize_text(s):
         return "NA"
     return s
 
-
-# ============================================================
-# CATALOG LOADING
-# ============================================================
 
 def load_catalog_from_url(url):
     try:
@@ -109,7 +73,6 @@ def load_catalog_from_url(url):
             return None
 
     df.columns = [normalize_text(c) for c in df.columns]
-
     candidates_code = ["CODIGO_ESTACION", "COD_ESTACION", "CODIGO", "ESTACION"]
     candidates_name = ["NOMBRE", "NOMBRE_ESTACION"]
     candidates_district = ["DISTRITO", "NOMBRE_DISTRITO"]
@@ -121,7 +84,7 @@ def load_catalog_from_url(url):
     dist_code = next((c for c in candidates_dcode if c in df.columns), None)
 
     if not stc:
-        return None
+        return None #FLAG
 
     lookup = {}
 
@@ -132,21 +95,17 @@ def load_catalog_from_url(url):
 
         dname = normalize_text(r.get(dist_name, "")) if dist_name else "NA"
         dcode = re.sub(r"\D", "", str(r.get(dist_code, ""))).zfill(2) if dist_code else "NA"
-
         lookup[code] = (dcode, dname)
-
     return lookup
 
 
 def build_station_lookup():
-    # Try online catalogs
     for url in STATION_CATALOG_CANDIDATES:
         lookup = load_catalog_from_url(url)
         if lookup:
             print(f"[Lookup] Loaded: {url} ({len(lookup)} stations)")
-            return lookup
+            return lookup#FLAG
 
-    # Fallback
     print("[Lookup] Using fallback station catalog.")
     return {
         k: (v[0], normalize_text(v[1]))
@@ -155,7 +114,7 @@ def build_station_lookup():
 
 
 # ============================================================
-# SCRAPING
+# SCRAPING PARA ENCONTRAR CSV's
 # ============================================================
 
 def find_csvs(url):
@@ -177,13 +136,12 @@ def load_table(url):
     try:
         r = requests.get(url, headers=HEADERS)
         data = r.content
-
         for enc in ["utf-8-sig", "utf-8", "latin-1", None]:
             for sep in [";", ",", "\t"]:
                 try:
                     df = pd.read_csv(io.BytesIO(data), sep=sep, encoding=enc, dtype=str)
                     if df.shape[1] > 1:
-                        return df
+                        return df #FLAG
                 except:
                     pass
         return pd.DataFrame()
@@ -191,33 +149,29 @@ def load_table(url):
         return pd.DataFrame()
 
 
-# ============================================================
-# EXPANSION DIARIA (D01...D31)
-# ============================================================
 
 def extract_station_code(s):
     if not s:
-        return None
+        return None #FLAG
     m = re.search(r"28079(\d{3})", str(s))
     return m.group(1) if m else None
 
 
 def expand_month(df, lookup):
     if df.empty:
-        return pd.DataFrame()
+        return pd.DataFrame() #FLAG
 
     df.columns = [normalize_text(c) for c in df.columns]
-
     ycol = next((c for c in df.columns if "ANO" in c or "AÑO" in c or "YEAR" in c), None)
     mcol = "MES" if "MES" in df.columns else None
     pcol = next((c for c in df.columns if "PUNTO_MUESTREO" in c), None)
 
     if not ycol or not mcol or not pcol:
-        return pd.DataFrame()
+        return pd.DataFrame() #FLAG
 
     dcols = [c for c in df.columns if re.match(r"^D\d{2}$", c)]
     if not dcols:
-        return pd.DataFrame()
+        return pd.DataFrame()#FLAG
 
     out = []
 
@@ -229,7 +183,6 @@ def expand_month(df, lookup):
         station_raw = r.get(pcol, "")
         station = extract_station_code(station_raw)
 
-        # lookup
         if station in lookup:
             no_dist, name_dist = lookup[station]
         else:
@@ -274,7 +227,7 @@ def process_page(url, lookup):
             dfs.append(df_exp)
 
     if not dfs:
-        return pd.DataFrame()
+        return pd.DataFrame() #FLAG
 
     df = pd.concat(dfs, ignore_index=True)
 
@@ -300,7 +253,7 @@ def main():
             "dia","mes","año","no_distrito","nombre_distrito","valor_calidad_aire"
         ]).to_csv(OUT_FILE, sep=";", index=False, encoding="utf-8-sig")
         print("[OK] Archivo vacío generado")
-        return
+        return #FLAG
 
     final = pd.concat(parts, ignore_index=True)
 
