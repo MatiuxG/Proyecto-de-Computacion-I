@@ -19,6 +19,9 @@ import xml.etree.ElementTree as ET
 # Configuración
 # ================================
 
+
+# REVISAR NOMBRES, PONER VARIABLES QUE SE ENTIENDAN SOLO LEERLAS Y COMENTAR LO NECESARIO 
+
 DATASET_PAGES = [
     "https://datos.madrid.es/portal/site/egob/menuitem.c05c1f754a33a9fbe4b2e4b284f1a5a0/?vgnextoid=7c2843010d9c3610VgnVCM2000001f4a900aRCRD&vgnextchannel=374512b9ace9f310VgnVCM100000171f5a0aRCRD&vgnextfmt=default",
     "https://datos.madrid.es/portal/site/egob/menuitem.c05c1f754a33a9fbe4b2e4b284f1a5a0/?vgnextoid=40085fb0e70b7410VgnVCM2000000c205a0aRCRD&vgnextchannel=374512b9ace9f310VgnVCM100000171f5a0aRCRD&vgnextfmt=default",
@@ -31,7 +34,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUT_FILE = OUTPUT_DIR / "datasheet_accidentes.csv"
 
 HEADERS = {
-    "User-Agent": "MateoScraperBot/1.1 (+contact: your-email@example.com)",
+    "User-Agent": "MateoScraperBot/1.1",
     "Accept": "text/html,application/xhtml+xml,application/json,text/csv,application/rdf+xml,*/*",
     "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
 }
@@ -39,15 +42,12 @@ HEADERS = {
 CSV_EXT = (".csv",)
 JSON_EXT = (".json", ".geojson")
 
-# --- RANGO DE FECHAS (2022 a 2024) ---
+#RANGO DE FECHAS (2022 a 2024)
 DEFAULT_START = date_cls(2022, 1, 1)
 DEFAULT_END = date_cls(2025, 10, 31)
 
-# --- Columnas finales solicitadas ---
-FINAL_COLUMNS = [
-    "Dia", "Mes", "Año", "district_code", "district_name", "total_de_accidentes"
-]
-
+#columnas que pedimos
+FINAL_COLUMNS = ["Dia", "Mes", "Año", "district_code", "district_name", "total_de_accidentes"]
 MADRID_DISTRICTS = {
     "1": "Centro", "01": "Centro",
     "2": "Arganzuela", "02": "Arganzuela",
@@ -71,10 +71,6 @@ MADRID_DISTRICTS = {
     "20": "San Blas-Canillejas",
     "21": "Barajas",
 }
-
-# ================================
-# Red y parsing
-# ================================
 
 def fetch(url: str, timeout: int = 60) -> requests.Response:
     r = requests.get(url, headers=HEADERS, timeout=timeout)
@@ -113,7 +109,7 @@ def parse_rdf_for_downloads(xml_text: str) -> List[Tuple[str, str, str]]:
             access = a.attrib.get(f"{{{ns['rdf']}}}resource", "").strip()
         if access:
             out.append((title, media, access))
-    return out
+    return out 
 
 def find_download_links_html(soup: BeautifulSoup, base_url: str) -> List[Tuple[str, str]]:
     links: List[Tuple[str, str]] = []
@@ -126,23 +122,24 @@ def find_download_links_html(soup: BeautifulSoup, base_url: str) -> List[Tuple[s
         low = (label + " " + href).lower()
         if ("descarg" in low) or href.lower().endswith(JSON_EXT) or href.lower().endswith(CSV_EXT):
             links.append((label, href))
+            
     def score(item):
         _, u = item
         u = u.lower()
         if u.endswith(".csv"): return 0
-        if u.endswith(".json") or u.endswith(".geojson"): return 1
-        return 5
+        if u.endswith(".json") or u.endswith(".geojson"): return 1 #FLAG
+        return 5 #FLAG
     links.sort(key=score)
     return links
 
 def find_downloads(page_url: str, html_text: str) -> List[str]:
     for key, urls in HARDCODED_DOWNLOADS.items():
         if key in page_url:
-            return urls[:]
+            return urls[:] #FLAG
     if "<rdf:RDF" in html_text or "http://www.w3.org/ns/dcat#" in html_text:
         dists = parse_rdf_for_downloads(html_text)
         dists.sort(key=lambda t: 0 if "csv" in t[1].lower() or t[2].lower().endswith(".csv") else 1)
-        return [d[2] for d in dists if d[2]]
+        return [d[2] for d in dists if d[2]] #FLAG
     soup = make_soup(html_text)
     pairs = find_download_links_html(soup, page_url)
     return [u for _, u in pairs]
@@ -167,7 +164,7 @@ def load_remote_table(url: str) -> Optional[pd.DataFrame]:
             if df is None:
                 raise
         print(f"    [OK CSV] shape={df.shape}")
-        return df
+        return df #FLAG
 
     if u.endswith(".json") or u.endswith(".geojson") or "json" in ctype:
         data = r.json()
@@ -179,7 +176,8 @@ def load_remote_table(url: str) -> Optional[pd.DataFrame]:
             df = pd.json_normalize(data)
         df = df.astype(str)
         print(f"    [OK JSON] shape={df.shape}")
-        return df
+        return df #FLAG
+    "User-Agent": "MateoScraperBot/1.1 (+contact: your-email@example.com) 
 
     print("    [Aviso] Tipo no soportado (se espera CSV/JSON).")
     return None
@@ -217,7 +215,7 @@ def guess_district_cols(df: pd.DataFrame) -> Tuple[Optional[str], Optional[str]]
 
 def filter_by_window(df: pd.DataFrame, start_date: date_cls, end_date: date_cls) -> pd.DataFrame:
     if df.empty:
-        return df
+        return df #FLAG
     mask = None
     for c in guess_datetime_cols(df):
         try:
@@ -227,7 +225,7 @@ def filter_by_window(df: pd.DataFrame, start_date: date_cls, end_date: date_cls)
         except Exception:
             continue
     if mask is None:
-        return df.iloc[0:0]
+        return df.iloc[0:0] #FLAG
     return df[mask]
 
 def process_one(page_url: str, start_date: date_cls, end_date: date_cls) -> pd.DataFrame:
@@ -236,14 +234,13 @@ def process_one(page_url: str, start_date: date_cls, end_date: date_cls) -> pd.D
         html = fetch_text(page_url)
     except Exception as e:
         print(f"  [Error al abrir ficha] {e}")
-        return pd.DataFrame()
+        return pd.DataFrame()#FLAG
 
     download_urls = find_downloads(page_url, html)
     if not download_urls:
         print("  [Aviso] No se hallaron URLs de descarga.")
-        return pd.DataFrame()
+        return pd.DataFrame() #FLAG
 
-    # --- MODIFICADO: Acumular TODOS los dataframes válidos de la página ---
     dfs = [] 
     for dl in download_urls:
         if not (dl.lower().endswith(CSV_EXT) or dl.lower().endswith(JSON_EXT)):
@@ -269,25 +266,23 @@ def process_one(page_url: str, start_date: date_cls, end_date: date_cls) -> pd.D
 
     if not dfs:
         print("  [Info] Ninguna descarga produjo filas en la ventana.")
-        return pd.DataFrame()
+        return pd.DataFrame() #FLAG
     
-    # Combinar todos los archivos encontrados (2022, 2023, 2024...)
     return pd.concat(dfs, ignore_index=True, sort=False)
 
 def build_contract_from_raw(df_raw: pd.DataFrame) -> pd.DataFrame:
     if df_raw.empty:
-        return pd.DataFrame(columns=FINAL_COLUMNS)
+        return pd.DataFrame(columns=FINAL_COLUMNS) #FLAG
 
     df = df_raw.copy()
     out = pd.DataFrame()
 
-    # --- Fechas ---
     dt_cols = guess_datetime_cols(df)
     if dt_cols:
         full = None
         for c in dt_cols:
             if any(k in c for k in ["fecha_hora","fechahora","datetime","timestamp"]):
-                full = c; break
+                full = c; break #FLAG
         if full is None:
             full = dt_cols[0]
 
@@ -307,11 +302,8 @@ def build_contract_from_raw(df_raw: pd.DataFrame) -> pd.DataFrame:
             out["Mes"] = pd.Series(dtype='Int64')
             out["Año"] = pd.Series(dtype='Int64')
 
-    # --- Distritos: CORREGIDO ---
     dcode, dname = guess_district_cols(df)
     
-    # Prioridad: Obtener el código limpio.
-    # Si tenemos columna de código, la usamos. Si no, usamos la de nombre asumiendo que contiene el código (tu caso).
     raw_code = None
     if dcode:
         raw_code = df[dcode]
@@ -319,15 +311,15 @@ def build_contract_from_raw(df_raw: pd.DataFrame) -> pd.DataFrame:
         raw_code = df[dname]
     
     if raw_code is not None:
-        # Extraer dígitos para limpiar el código
+        #extraer dígitos para limpiar el código
         out["district_code"] = raw_code.astype(str).str.extract(r"(\d+)")[0].fillna("NA")
     else:
         out["district_code"] = "NA"
 
-    # Mapeo FORZADO: Usar el diccionario basándose estrictamente en el código
+    #usar el diccionario basándose estrictamente en el código
     def get_district_name(code):
         if pd.isna(code) or code == "NA":
-            return "NA"
+            return "NA" #FLAG
         c = str(code).strip()
         # Intentar match exacto (ej: "1") o con padding (ej: "01")
         return MADRID_DISTRICTS.get(c, MADRID_DISTRICTS.get(c.zfill(2), "NA"))
@@ -358,7 +350,7 @@ def main():
             quoting=csv.QUOTE_MINIMAL, lineterminator="\n"
         )
         print(f"[OK] Datasheet vacío escrito: {OUT_FILE.resolve()}")
-        return
+        return #FLAG
 
     raw = pd.concat(parts, ignore_index=True, sort=False)
     standardized = build_contract_from_raw(raw)
