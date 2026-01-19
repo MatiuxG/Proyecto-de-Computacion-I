@@ -6,7 +6,6 @@ from datetime import datetime
 from tkinter import messagebox, filedialog
 import joblib
 
-# Importación de la lógica de entrenamiento y predicción
 from modelos_entrenamiento.random_forest import entrenamiento_random_forest
 from modelos_entrenamiento.decisiontree import entrenamiento_arbol_de_decision
 from modelos_entrenamiento.svm import entrenamiento_svm
@@ -17,7 +16,6 @@ class App(ctk.CTk):
         super().__init__()
         self.title("Neural Studio Pro - Madrid Mobility")
         self.geometry("1200x900")
-        
         self.ruta_directorio_entrenamiento = os.getcwd()
         self.modelo_seleccionado_path = ""
         self.resultados_lote_df = pd.DataFrame()
@@ -110,15 +108,12 @@ class App(ctk.CTk):
             if v.get(): features.append(k)
 
         def task():
-            # FEEDBACK: Deshabilitar botón y avisar que está pensando
             self.btn_train.configure(state="disabled", text="⌛ ENTRENANDO...")
             res = entrenamiento_random_forest(self.target_menu.get(), features, ruta_final)
             
-            # Limpiar e insertar ficha técnica
             self.info_box.delete("0.0", "end")
             self.info_box.insert("end", f"✅ MODELO GENERADO\n------------------\nAcc: {res['accuracy']:.2%}\nMAE: {res['mae']:.4f}\nMSE: {res['mse']:.4f}\nN: {res['n_muestras']}")
             
-            # Restaurar botón y avisar fin
             self.btn_train.configure(state="normal", text="EJECUTAR ENTRENAMIENTO")
             messagebox.showinfo("Neural Studio", f"¡Entrenamiento finalizado!\nModelo guardado en: {nombre}.pkl")
 
@@ -155,7 +150,7 @@ class App(ctk.CTk):
         f_bot.pack(padx=20, pady=10, fill="x")
         self.btn_ejecutar = ctk.CTkButton(f_bot, text="EJECUTAR ANÁLISIS", fg_color="#e67e22", height=40, command=self.ejecutar_prediccion_lote)
         self.btn_ejecutar.pack(side="left", padx=20)
-        ctk.CTkButton(f_bot, text="📥 EXPORTAR EXCEL DETALLADO", fg_color="#3498db", command=self.exportar_analisis_detallado).pack(side="right", padx=20)
+        ctk.CTkButton(f_bot, text="📥 EXPORTAR EXCEL", fg_color="#3498db", command=self.exportar_analisis_detallado).pack(side="right", padx=20)
 
     def cargar_csv_ejemplares(self):
         ruta = filedialog.askopenfilename(filetypes=[("CSV", "*.csv")])
@@ -171,7 +166,6 @@ class App(ctk.CTk):
         if not csv_p or not mod_p: messagebox.showwarning("Atención", "Seleccione primero el CSV y el Modelo."); return
 
         def thread_task():
-            # FEEDBACK: Cambiar texto del botón
             self.btn_ejecutar.configure(state="disabled", text="⌛ PENSANDO...")
             try:
                 df = pd.read_csv(csv_p, sep=None, engine="python")
@@ -207,7 +201,6 @@ class App(ctk.CTk):
             except Exception as e:
                 messagebox.showerror("Error", f"Error procesando el análisis: {e}")
             finally:
-                # Restaurar botón
                 self.btn_ejecutar.configure(state="normal", text="EJECUTAR ANÁLISIS")
 
         threading.Thread(target=thread_task, daemon=True).start()
@@ -215,7 +208,7 @@ class App(ctk.CTk):
     def exportar_analisis_detallado(self):
         if self.resultados_lote_df.empty:
             messagebox.showwarning("Aviso", "No hay resultados. Primero ejecute el análisis.")
-            return
+            return #FLAG
         p = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")])
         if p:
             try:
