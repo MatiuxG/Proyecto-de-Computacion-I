@@ -1,29 +1,19 @@
 import pandas as pd
 import sys
 import os
-# ==================== CONFIGURACIÓN DE RUTAS ====================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-
-# Rutas de Entrada
 DIR_DATOS = os.path.join(BASE_DIR, "DatosHistoricos")
 DIR_DOCS = os.path.join(BASE_DIR, "DocumentacionNecesaria")
-
-# Archivos específicos
 ARCHIVOS_TRAFICO = [
     f for f in os.listdir(DIR_DATOS)
     if f.lower().endswith(".csv")
 ]
 ARCHIVO_UBICACION = "pmed_ubicacion_09-2025.csv"
-
-# Ruta de Salida
 DIR_RESULTADOS = os.path.join(BASE_DIR, "Resultados")
 RUTA_SALIDA = os.path.join(DIR_RESULTADOS, "resultado.csv")
 
 
-
-
-# Diccionario de Distritos
 DISTRITOS = {
     1: "Centro", 2: "Arganzuela", 3: "Retiro", 4: "Salamanca", 5: "Chamartín",
     6: "Tetuán", 7: "Chamberí", 8: "Fuencarral-El Pardo", 9: "Moncloa-Aravaca",
@@ -31,7 +21,6 @@ DISTRITOS = {
     14: "Moratalaz", 15: "Ciudad Lineal", 16: "Hortaleza", 17: "Villaverde",
     18: "Villa de Vallecas", 19: "Vicálvaro", 20: "San Blas-Canillejas", 21: "Barajas"
 }
-# ================================================================
 
 def crear_directorios():
     os.makedirs(DIR_RESULTADOS, exist_ok=True)
@@ -43,16 +32,14 @@ def cargar_csv_flexible(ruta):
         try:
             df = pd.read_csv(ruta, sep=sep, encoding=enc, nrows=5, on_bad_lines='skip')
             if len(df.columns) > 1:
-                return pd.read_csv(ruta, sep=sep, encoding=enc, on_bad_lines='skip')
+                return pd.read_csv(ruta, sep=sep, encoding=enc, on_bad_lines='skip')#FLAG
         except: continue
     return None
 
-# ==================== PROCESO ETL ====================
 
 print("--- INICIANDO PROCESAMIENTO (CORRECCIÓN FECHAS) ---")
 crear_directorios()
 
-# 1. CARGAR UBICACIONES
 ruta_ubic = os.path.join(DIR_DOCS, ARCHIVO_UBICACION)
 print(f"\n1. Cargando mapa de sensores: {ruta_ubic}")
 df_ubic = cargar_csv_flexible(ruta_ubic)
@@ -81,7 +68,6 @@ else:
 maestro_sensores['nombre_distrito'] = maestro_sensores['id_distrito'].map(DISTRITOS).fillna("Desconocido")
 maestro_sensores = maestro_sensores[maestro_sensores['id_distrito'] > 0].copy()
 
-# 2. CARGAR DATOS DE TRÁFICO
 print("\n2. Procesando archivos de tráfico...")
 dfs_trafico = []
 
@@ -108,24 +94,15 @@ for archivo in ARCHIVOS_TRAFICO:
             else:
                 df['trafico_dia'] = 0
             
-            # --- CORRECCIÓN DE FECHAS ---
-            # Si tuviste el problema de día/mes invertido, significa que tu archivo probablemente es MM/DD/YYYY
-            # pero se leyó como DD/MM/YYYY.
-            
             try:
-                # Intentamos convertir a datetime automáticamente. 
-                # dayfirst=False asume formato Mes/Día (Americano), que parece ser lo que tienes.
                 fechas_dt = pd.to_datetime(df[col_fecha], dayfirst=False, errors='coerce')
-                
                 df['dia'] = fechas_dt.dt.day
                 df['mes'] = fechas_dt.dt.month
                 df['año'] = fechas_dt.dt.year
             except:
-                # Si falla, fallback manual (Split por /)
-                # Asumimos que la posición 0 es MES y 1 es DÍA según tu reporte
                 split_fecha = df[col_fecha].astype(str).str.split('/', expand=True)
-                df['mes'] = split_fecha[0].astype(int) # Posición 0 al mes
-                df['dia'] = split_fecha[1].astype(int) # Posición 1 al día
+                df['mes'] = split_fecha[0].astype(int) 
+                df['dia'] = split_fecha[1].astype(int) 
                 df['año'] = split_fecha[2].astype(int)
 
             dfs_trafico.append(df[['id_sensor', 'dia', 'mes', 'año', 'trafico_dia']])
@@ -138,7 +115,6 @@ if not dfs_trafico:
 
 df_trafico_total = pd.concat(dfs_trafico, ignore_index=True)
 
-# 3. CRUCE Y GUARDADO
 print("\n3. Generando dataset final...")
 df_final = df_trafico_total.merge(maestro_sensores, on='id_sensor', how='inner')
 resultado = df_final.groupby(['dia', 'mes', 'año', 'id_distrito', 'nombre_distrito'])['trafico_dia'].mean().reset_index()
