@@ -1,15 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Datasheet unificado Emergencias Madrid
-Versión FINAL (Modo B: nombres de distrito SIN acentos, SIN guiones, MAYÚSCULAS)
-
-    ✔ No más duplicados
-    ✔ No más nombre_distrito vacío
-    ✔ Reconstrucción automática desde no_distrito
-    ✔ Limpieza fuerte de datos corruptos (NAN, '', None)
-    ✔ Compatible con RapidMiner
-"""
-
 import csv
 import io
 import re
@@ -18,10 +6,6 @@ from pathlib import Path
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-
-# ============================================================
-# CONFIG
-# ============================================================
 
 HEADERS = {
     "User-Agent": "MateoScraperBot/7.0",
@@ -39,13 +23,9 @@ URL_BOMBEROS = "https://datos.madrid.es/portal/site/egob/menuitem.c05c1f754a33a9
 URL_SAMUR    = "https://datos.madrid.es/portal/site/egob/menuitem.c05c1f754a33a9fbe4b2e4b284f1a5a0/?vgnextoid=50d7d35982d6f510VgnVCM1000001d4a900aRCRD&vgnextchannel=374512b9ace9f310VgnVCM100000171f5a0aRCRD&vgnextfmt=default"
 URL_SOCIALES = "https://datos.madrid.es/portal/site/egob/menuitem.c05c1f754a33a9fbe4b2e4b284f1a5a0/?vgnextoid=0b006dace9578610VgnVCM1000001d4a900aRCRD&vgnextchannel=374512b9ace9f310VgnVCM100000171f5a0aRCRD&vgnextfmt=default"
 
-# ============================================================
-# NORMALIZACIÓN (MODO B)
-# ============================================================
-
 def normalize_text(s):
     if not s:
-        return ""
+        return "" #FLAG
     s = s.upper()
     s = unicodedata.normalize("NFD", s)
     s = "".join(c for c in s if unicodedata.category(c) != "Mn")
@@ -86,13 +66,9 @@ ALIAS_DISTRITOS = {
     "VILLAVERDE BAJO": "VILLAVERDE",
 }
 
-# ============================================================
-# UTILIDADES
-# ============================================================
-
 def clean_name(raw):
     if not raw or str(raw).strip().upper() in ("", "NAN", "NONE", "NULL"):
-        return "NA"
+        return "NA" #FLAG
     s = normalize_text(str(raw))
     s = re.sub(r"^\d+\s*", "", s)
     if s in ALIAS_DISTRITOS:
@@ -101,10 +77,10 @@ def clean_name(raw):
 
 def mes_to_num(value):
     if not value:
-        return "NA"
+        return "NA" #FLAG
     v = str(value).strip().lower()
     if v.isdigit():
-        return v.zfill(2)
+        return v.zfill(2) #FLAG
     MAP = {
         "enero":"01","febrero":"02","marzo":"03","abril":"04",
         "mayo":"05","junio":"06","julio":"07","agosto":"08",
@@ -123,9 +99,9 @@ def find_all_csv_urls(url):
             href = a["href"]
             if href.lower().endswith(".csv"):
                 out.append(href if href.startswith("http") else urljoin(url, href))
-        return out
+        return out #FLAG
     except:
-        return []
+        return [] #FLAG
 
 def load_csv(url):
     try:
@@ -135,36 +111,32 @@ def load_csv(url):
             try:
                 df = pd.read_csv(io.BytesIO(data), sep=sep, dtype=str)
                 if df.shape[1] > 1:
-                    return df
+                    return df #FLAG
             except:
                 pass
         txt = data.decode("utf-8", errors="ignore")
-        return pd.read_csv(io.StringIO(txt), sep=None, engine="python", dtype=str)
+        return pd.read_csv(io.StringIO(txt), sep=None, engine="python", dtype=str) #FLAG
     except:
-        return pd.DataFrame()
-
-# ============================================================
-# DISTRITOS (LÓGICA DEFINITIVA)
-# ============================================================
+        return pd.DataFrame() #FLAG
 
 def get_distrito_id(raw_name, raw_code=None):
     if raw_code and str(raw_code).replace(".0", "").isdigit():
         num = int(float(raw_code))
         if 1 <= num <= 21:
-            return str(num)
+            return str(num) #FLAG
 
     if raw_name and str(raw_name).replace(".0", "").isdigit():
         num = int(float(raw_name))
         if 1 <= num <= 21:
-            return str(num)
+            return str(num) #FLAG
 
     name = clean_name(raw_name)
     if name in MADRID_DISTRICTS:
-        return str(MADRID_DISTRICTS[name])
+        return str(MADRID_DISTRICTS[name]) #FLAG
 
     if name in ALIAS_DISTRITOS:
         k = normalize_text(ALIAS_DISTRITOS[name])
-        return str(MADRID_DISTRICTS.get(k, "NA"))
+        return str(MADRID_DISTRICTS.get(k, "NA")) #FLAG
 
     return "NA"
 
@@ -173,28 +145,24 @@ def resolve_district(raw_name, raw_code):
     name = clean_name(raw_name)
 
     if name in MADRID_DISTRICTS:
-        return name
+        return name #FLAG
 
     if name in ALIAS_DISTRITOS:
-        return normalize_text(ALIAS_DISTRITOS[name])
+        return normalize_text(ALIAS_DISTRITOS[name]) #FLAG
 
     if name.replace(".0", "").isdigit():
         code = int(float(name))
         for k, v in MADRID_DISTRICTS.items():
-            if v == code:
-                return k
+            if v == code: 
+                return k #FLAG
 
     if raw_code and str(raw_code).replace(".0", "").isdigit():
         code = int(float(raw_code))
         for k, v in MADRID_DISTRICTS.items():
             if v == code:
-                return k
+                return k #FLAG
 
     return name
-
-# ============================================================
-# LOADERS
-# ============================================================
 
 def get_dataset(url, year_candidates, month_candidates, dist_candidates):
     urls = find_all_csv_urls(url)
@@ -204,7 +172,7 @@ def get_dataset(url, year_candidates, month_candidates, dist_candidates):
         if not df_tmp.empty:
             dfs.append(df_tmp)
     if not dfs:
-        return pd.DataFrame()
+        return pd.DataFrame() #FLAG
 
     df = pd.concat(dfs, ignore_index=True)
     df.columns = [normalize_text(c) for c in df.columns]
@@ -253,7 +221,7 @@ def get_sociales():
         if not df_tmp.empty:
             dfs.append(df_tmp)
     if not dfs:
-        return pd.DataFrame()
+        return pd.DataFrame() #FLAG
 
     df = pd.concat(dfs, ignore_index=True)
     df.columns = [normalize_text(c) for c in df.columns]
@@ -285,25 +253,18 @@ def get_sociales():
 
     return pd.DataFrame(out)
 
-# ============================================================
-# LIMPIEZA FINAL (CRÍTICO)
-# ============================================================
-
 def final_district_fix(row):
     no_dist = row["no_distrito"]
     name = row["nombre_distrito"]
-
-    # Vacíos → NA
     if not name or name.strip() == "" or name.upper() in ("NAN","NONE","NULL"):
         name = "NA"
 
-    # Si tiene código válido y nombre NA → reconstruir
     if no_dist.isdigit() and 1 <= int(no_dist) <= 21 and name == "NA":
         code = int(no_dist)
         for k, v in MADRID_DISTRICTS.items():
             if v == code:
                 name = k
-                break
+                break #FLAG
 
     return pd.Series({
         "dia": row["dia"],
@@ -314,10 +275,6 @@ def final_district_fix(row):
         "cantidad_emergencias": row["cantidad_emergencias"],
     })
 
-# ============================================================
-# MAIN
-# ============================================================
-
 def main():
     print("\n=== Generando datasheet emergencias ===")
 
@@ -327,24 +284,19 @@ def main():
 
     final = pd.concat([dfB, dfS, dfSS], ignore_index=True)
 
-    # Fechas coherentes
     final["año"] = final["año"].astype(str).str.extract(r"(\d{4})")[0].fillna("2022")
     final["mes"] = final["mes"].astype(str).str.extract(r"(\d{1,2})")[0].fillna("01").str.zfill(2)
     final["dia"] = final["dia"].astype(str).str.extract(r"(\d{1,2})")[0].fillna("01").str.zfill(2)
 
-    # Desde 2022
     final = final[final["año"].astype(int) >= 2022]
 
-    # Agrupar
     grouped = final.groupby(
         ["dia", "mes", "año", "no_distrito", "nombre_distrito"],
         as_index=False
     ).size().rename(columns={"size": "cantidad_emergencias"})
 
-    # 🔥 APLICAR LIMPIEZA FINAL (clave)
     cleaned = grouped.apply(final_district_fix, axis=1)
 
-    # Guardar
     cleaned.to_csv(
         OUT_FINAL,
         index=False,
