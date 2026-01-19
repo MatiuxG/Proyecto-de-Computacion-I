@@ -1,15 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Datasheet unificado OBRAS Madrid
-Versión PRO reconstruida (Modo B distritos: SIN acentos, SIN guiones, MAYÚSCULAS)
-
-✔ Descarga y unifica datos desde 2022
-✔ Normaliza distritos con 4 niveles (exacto / alias / fuzzy / fallback)
-✔ Limpieza total de fechas y campos corruptos
-✔ Compatible con RapidMiner
-✔ Igual arquitectura interna que emergencias_scraper.py
-"""
-
 import csv
 import io
 import re
@@ -20,12 +8,8 @@ import pandas as pd
 import requests
 from difflib import get_close_matches
 
-# ============================================================
-# CONFIG
-# ============================================================
 
 CSV_URL = "https://datos.madrid.es/egob/catalogo/300538-11514071-obras-planificadas-ejecucion.csv"
-
 HEADERS = {
     "User-Agent": "MateoScraperBot/9.0",
     "Accept": "*/*"
@@ -33,19 +17,14 @@ HEADERS = {
 
 OUTPUT_DIR = Path("Obras_Scripts/Resultados")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
 OUT_FILE = OUTPUT_DIR / "datasheet_obras.csv"
 
 TIMEOUT = 60
 
-# ============================================================
-# NORMALIZACIÓN MODO B
-# ============================================================
-
 def normalize_text(s):
     """Modo B — mayúsculas, sin acentos, sin guiones, espacios simples."""
     if not s:
-        return ""
+        return "" #FLAG
     s = str(s).upper()
     s = unicodedata.normalize("NFD", s)
     s = "".join(c for c in s if unicodedata.category(c) != "Mn")
@@ -84,25 +63,22 @@ ALIAS = {
     "SAN BLAS": "SAN BLAS CANILLEJAS",
 }
 
-# ============================================================
-# UTILIDADES
-# ============================================================
 
 def clean(s):
     if not s or str(s).strip().upper() in ("", "NAN", "NONE", "NULL"):
-        return "NA"
+        return "NA" #FLAG
     return normalize_text(s)
 
 def clean_date(value):
     if not value or value in ("0", "0.0", "nan"):
-        return ""
+        return "" #FLAG
     return str(value).strip()
 
 def parse_date_safe(v):
     """Parsea fecha robustamente con varios formatos."""
     v = clean_date(v)
     if not v:
-        return pd.NaT
+        return pd.NaT #FLAG
 
     for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
         try:
@@ -112,39 +88,27 @@ def parse_date_safe(v):
 
     return pd.NaT
 
-# ============================================================
-# DISTRITOS — Lógica completa
-# ============================================================
-
 def resolve_district(raw_name):
-    """Devuelve (no_distrito, nombre_distrito) con 4 niveles de resolución."""
     if not raw_name:
-        return "NA", "NA"
+        return "NA", "NA" #FLAG
 
     name = clean(raw_name)
 
-    # Nivel 1 — exacto
     if name in MADRID_DISTRICTS:
-        return str(MADRID_DISTRICTS[name]), name
+        return str(MADRID_DISTRICTS[name]), name #FLAG
 
-    # Nivel 2 — alias
     if name in ALIAS:
         key = normalize_text(ALIAS[name])
-        return str(MADRID_DISTRICTS[key]), key
+        return str(MADRID_DISTRICTS[key]), key #FLAG
 
-    # Nivel 3 — fuzzy
     candidates = list(MADRID_DISTRICTS.keys())
     match = get_close_matches(name, candidates, n=1, cutoff=0.75)
     if match:
         k = match[0]
-        return str(MADRID_DISTRICTS[k]), k
+        return str(MADRID_DISTRICTS[k]), k #FLAG
 
-    # Nivel 4 — fallback
     return "NA", name
 
-# ============================================================
-# MAIN LOGIC
-# ============================================================
 
 def main():
     print("\n=== Generando datasheet OBRAS ===")
