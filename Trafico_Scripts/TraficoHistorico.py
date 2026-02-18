@@ -26,15 +26,21 @@ def crear_directorios():
     os.makedirs(DIR_RESULTADOS, exist_ok=True)
 
 def cargar_csv_flexible(ruta):
-    if not os.path.exists(ruta): return None
-    formatos = [(';', 'utf-8'), (';', 'latin-1'), (',', 'utf-8'), (',', 'latin-1')]
-    for sep, enc in formatos:
-        try:
-            df = pd.read_csv(ruta, sep=sep, encoding=enc, nrows=5, on_bad_lines='skip')
-            if len(df.columns) > 1:
-                return pd.read_csv(ruta, sep=sep, encoding=enc, on_bad_lines='skip')#FLAG
-        except: continue
-    return None
+    df_res = None
+    if os.path.exists(ruta):
+        formatos = [(';', 'utf-8'), (';', 'latin-1'), (',', 'utf-8'), (',', 'latin-1')]
+        encontrado = False
+        for sep, enc in formatos:
+            if not encontrado:
+                try:
+                    df_temp = pd.read_csv(ruta, sep=sep, encoding=enc, nrows=10, on_bad_lines='skip')
+                    if len(df_temp.columns) > 1:
+                        # Si es válido, cargamos todo y marcamos como encontrado
+                        df_res = pd.read_csv(ruta, sep=sep, encoding=enc, on_bad_lines='skip')
+                        encontrado = True
+                except:
+                    pass
+    return df_res
 
 
 print("--- INICIANDO PROCESAMIENTO (CORRECCIÓN FECHAS) ---")

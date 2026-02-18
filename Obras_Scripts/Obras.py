@@ -8,7 +8,6 @@ import pandas as pd
 import requests
 from difflib import get_close_matches
 
-
 CSV_URL = "https://datos.madrid.es/egob/catalogo/300538-11514071-obras-planificadas-ejecucion.csv"
 HEADERS = {
     "User-Agent": "MateoScraperBot/9.0",
@@ -23,14 +22,14 @@ TIMEOUT = 60
 
 def normalize_text(s):
     """Modo B — mayúsculas, sin acentos, sin guiones, espacios simples."""
-    if not s:
-        return "" #FLAG
-    s = str(s).upper()
-    s = unicodedata.normalize("NFD", s)
-    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
-    s = re.sub(r"-", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+    res = "" 
+    if s:
+        s = str(s).upper()
+        s = unicodedata.normalize("NFD", s)
+        s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+        s = re.sub(r"-", " ", s)
+        res = re.sub(r"\s+", " ", s).strip()
+    return res
 
 MADRID_DISTRICTS = {
     normalize_text("CENTRO"): 1,
@@ -63,52 +62,59 @@ ALIAS = {
     "SAN BLAS": "SAN BLAS CANILLEJAS",
 }
 
-
 def clean(s):
-    if not s or str(s).strip().upper() in ("", "NAN", "NONE", "NULL"):
-        return "NA" #FLAG
-    return normalize_text(s)
+    res = "NA"
+    if s and str(s).strip().upper() not in ("", "NAN", "NONE", "NULL"):
+        res = normalize_text(s)
+    return res
 
 def clean_date(value):
-    if not value or value in ("0", "0.0", "nan"):
-        return "" #FLAG
-    return str(value).strip()
+    res = ""
+    if value and value not in ("0", "0.0", "nan"):
+        res = str(value).strip()
+    return res
 
 def parse_date_safe(v):
     """Parsea fecha robustamente con varios formatos."""
     v = clean_date(v)
-    if not v:
-        return pd.NaT #FLAG
-
-    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
-        try:
-            return datetime.strptime(v, fmt)
-        except:
-            pass
-
-    return pd.NaT
+    res = pd.NaT
+    
+    if v:
+        # Usamos una lista de formatos y un flag para no usar breaks ni returns
+        formats = ["%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"]
+        found = False
+        for fmt in formats:
+            if not found:
+                try:
+                    res = datetime.strptime(v, fmt)
+                    found = True
+                except:
+                    pass
+    return res
 
 def resolve_district(raw_name):
-    if not raw_name:
-        return "NA", "NA" #FLAG
-
-    name = clean(raw_name)
-
-    if name in MADRID_DISTRICTS:
-        return str(MADRID_DISTRICTS[name]), name #FLAG
-
-    if name in ALIAS:
-        key = normalize_text(ALIAS[name])
-        return str(MADRID_DISTRICTS[key]), key #FLAG
-
-    candidates = list(MADRID_DISTRICTS.keys())
-    match = get_close_matches(name, candidates, n=1, cutoff=0.75)
-    if match:
-        k = match[0]
-        return str(MADRID_DISTRICTS[k]), k #FLAG
-
-    return "NA", name
-
+    res_no, res_nom = "NA", "NA"
+    
+    if raw_name:
+        name = clean(raw_name)
+        res_nom = name
+        
+        if name in MADRID_DISTRICTS:
+            res_no = str(MADRID_DISTRICTS[name])
+            res_nom = name
+        elif name in ALIAS:
+            key = normalize_text(ALIAS[name])
+            res_no = str(MADRID_DISTRICTS[key])
+            res_nom = key
+        else:
+            candidates = list(MADRID_DISTRICTS.keys())
+            match = get_close_matches(name, candidates, n=1, cutoff=0.75)
+            if match:
+                k = match[0]
+                res_no = str(MADRID_DISTRICTS[k])
+                res_nom = k
+                
+    return res_no, res_nom
 
 def main():
     print("\n=== Generando datasheet OBRAS ===")
@@ -118,11 +124,9 @@ def main():
 
     df = pd.read_csv(io.BytesIO(r.content), sep=";", dtype=str).fillna("")
 
-    # Fechas
     df["FECHA_INIC"] = df["FECHA_INIC"].apply(parse_date_safe)
     df["FECHA_FINA"] = df["FECHA_FINA"].apply(parse_date_safe)
 
-    # Elegir fecha válida
     df["FECHA"] = df["FECHA_INIC"].combine_first(df["FECHA_FINA"])
     df = df.dropna(subset=["FECHA"])
 
@@ -130,29 +134,27 @@ def main():
 
     for _, r in df.iterrows():
         fecha = r["FECHA"]
-        if fecha.year < 2022:
-            continue
+        if fecha.year >= 2022:
+            dia = f"{fecha.day:02d}"
+            mes = f"{fecha.month:02d}"
+            año = str(fecha.year)
 
-        dia = f"{fecha.day:02d}"
-        mes = f"{fecha.month:02d}"
-        año = str(fecha.year)
+            no_dist, nom_dist = resolve_district(
+                r.get("DISTRITO_S", "") or r.get("DENOMINACI", "")
+            )
 
-        no_dist, nom_dist = resolve_district(
-            r.get("DISTRITO_S", "") or r.get("DENOMINACI", "")
-        )
+            finished = False
+            if isinstance(r["FECHA_FINA"], datetime):
+                finished = r["FECHA_FINA"] < datetime.today()
 
-        finished = False
-        if isinstance(r["FECHA_FINA"], datetime):
-            finished = r["FECHA_FINA"] < datetime.today()
-
-        rows.append({
-            "dia": dia,
-            "mes": mes,
-            "año": año,
-            "no_distrito": no_dist,
-            "nombre_distrito": nom_dist,
-            "terminada": str(finished).lower()
-        })
+            rows.append({
+                "dia": dia,
+                "mes": mes,
+                "año": año,
+                "no_distrito": no_dist,
+                "nombre_distrito": nom_dist,
+                "terminada": str(finished).lower()
+            })
 
     out = pd.DataFrame(rows)
 
@@ -161,13 +163,13 @@ def main():
         index=False,
         sep=";",
         encoding="utf-8-sig",
-        quoting=csv.QUOTE_NONE
+        quoting=csv.QUOTE_NONE,
+        escapechar="\\" # Añadido para evitar errores con QUOTE_NONE si hay ';'
     )
 
     print("\n[OK] Archivo generado →", OUT_FILE.resolve())
     print("Filas:", len(out))
     print(out.head(10))
-
 
 if __name__ == "__main__":
     main()
