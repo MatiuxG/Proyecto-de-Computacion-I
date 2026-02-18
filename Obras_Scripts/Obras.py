@@ -14,46 +14,58 @@ HEADERS = {
     "Accept": "*/*"
 }
 
-OUTPUT_DIR = Path("Obras_Scripts/Resultados")
+OUTPUT_DIR = Path(__file__).resolve().parent / "Resultados"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUT_FILE = OUTPUT_DIR / "datasheet_obras.csv"
 
 TIMEOUT = 60
 
-def normalize_text(s):
-    """Modo B — mayúsculas, sin acentos, sin guiones, espacios simples."""
-    res = "" 
-    if s:
-        s = str(s).upper()
-        s = unicodedata.normalize("NFD", s)
-        s = "".join(c for c in s if unicodedata.category(c) != "Mn")
-        s = re.sub(r"-", " ", s)
-        res = re.sub(r"\s+", " ", s).strip()
-    return res
+def normalize_text(text, salida):
+    #convierte a mayusculas y quita tildes y guiones
+    res = ""
+    if text:
+        text = str(text).upper()
+        text = unicodedata.normalize("NFD", text)
+        text = "".join(char for char in text if unicodedata.category(char) != "Mn")
+        text = re.sub(r"-", " ", text)
+        res = re.sub(r"\s+", " ", text).strip()
+    salida.append(res)
 
-MADRID_DISTRICTS = {
-    normalize_text("CENTRO"): 1,
-    normalize_text("ARGANZUELA"): 2,
-    normalize_text("RETIRO"): 3,
-    normalize_text("SALAMANCA"): 4,
-    normalize_text("CHAMARTIN"): 5,
-    normalize_text("TETUAN"): 6,
-    normalize_text("CHAMBERI"): 7,
-    normalize_text("FUENCARRAL EL PARDO"): 8,
-    normalize_text("MONCLOA ARAVACA"): 9,
-    normalize_text("LATINA"): 10,
-    normalize_text("CARABANCHEL"): 11,
-    normalize_text("USERA"): 12,
-    normalize_text("PUENTE DE VALLECAS"): 13,
-    normalize_text("MORATALAZ"): 14,
-    normalize_text("CIUDAD LINEAL"): 15,
-    normalize_text("HORTALEZA"): 16,
-    normalize_text("VILLAVERDE"): 17,
-    normalize_text("VILLA DE VALLECAS"): 18,
-    normalize_text("VICALVARO"): 19,
-    normalize_text("SAN BLAS CANILLEJAS"): 20,
-    normalize_text("BARAJAS"): 21,
-}
+def build_madrid_districts(salida):
+    #crea diccionario de distritos usando texto normalizado
+    items = [
+        ("CENTRO", 1),
+        ("ARGANZUELA", 2),
+        ("RETIRO", 3),
+        ("SALAMANCA", 4),
+        ("CHAMARTIN", 5),
+        ("TETUAN", 6),
+        ("CHAMBERI", 7),
+        ("FUENCARRAL EL PARDO", 8),
+        ("MONCLOA ARAVACA", 9),
+        ("LATINA", 10),
+        ("CARABANCHEL", 11),
+        ("USERA", 12),
+        ("PUENTE DE VALLECAS", 13),
+        ("MORATALAZ", 14),
+        ("CIUDAD LINEAL", 15),
+        ("HORTALEZA", 16),
+        ("VILLAVERDE", 17),
+        ("VILLA DE VALLECAS", 18),
+        ("VICALVARO", 19),
+        ("SAN BLAS CANILLEJAS", 20),
+        ("BARAJAS", 21),
+    ]
+    dicc = {}
+    for name, code in items:
+        out_norm = []
+        normalize_text(name, out_norm)
+        dicc[out_norm[0]] = code
+    salida.append(dicc)
+
+_dist_out = []
+build_madrid_districts(_dist_out)
+MADRID_DISTRICTS = _dist_out[0]
 
 ALIAS = {
     "VALLECAS PTE": "PUENTE DE VALLECAS",
@@ -62,25 +74,31 @@ ALIAS = {
     "SAN BLAS": "SAN BLAS CANILLEJAS",
 }
 
-def clean(s):
+def clean(text, salida):
+    #limpia texto y devuelve NA si esta vacio
     res = "NA"
-    if s and str(s).strip().upper() not in ("", "NAN", "NONE", "NULL"):
-        res = normalize_text(s)
-    return res
+    if text and str(text).strip().upper() not in ("", "NAN", "NONE", "NULL"):
+        out_norm = []
+        normalize_text(text, out_norm)
+        res = out_norm[0]
+    salida.append(res)
 
-def clean_date(value):
+def clean_date(value, salida):
+    #limpia fecha como texto
     res = ""
     if value and value not in ("0", "0.0", "nan"):
         res = str(value).strip()
-    return res
+    salida.append(res)
 
-def parse_date_safe(v):
-    """Parsea fecha robustamente con varios formatos."""
-    v = clean_date(v)
+def parse_date_safe(value, salida):
+    #parsea fecha con varios formatos
+    out_clean = []
+    clean_date(value, out_clean)
+    v = out_clean[0]
     res = pd.NaT
-    
+
     if v:
-        # Usamos una lista de formatos y un flag para no usar breaks ni returns
+        #usamos una lista de formatos y un flag para no usar breaks
         formats = ["%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"]
         found = False
         for fmt in formats:
@@ -90,20 +108,25 @@ def parse_date_safe(v):
                     found = True
                 except:
                     pass
-    return res
+    salida.append(res)
 
-def resolve_district(raw_name):
+def resolve_district(raw_name, salida):
+    #resuelve el distrito usando nombre directo, alias o parecido
     res_no, res_nom = "NA", "NA"
-    
+
     if raw_name:
-        name = clean(raw_name)
+        out_clean = []
+        clean(raw_name, out_clean)
+        name = out_clean[0]
         res_nom = name
-        
+
         if name in MADRID_DISTRICTS:
             res_no = str(MADRID_DISTRICTS[name])
             res_nom = name
         elif name in ALIAS:
-            key = normalize_text(ALIAS[name])
+            out_norm = []
+            normalize_text(ALIAS[name], out_norm)
+            key = out_norm[0]
             res_no = str(MADRID_DISTRICTS[key])
             res_nom = key
         else:
@@ -113,8 +136,8 @@ def resolve_district(raw_name):
                 k = match[0]
                 res_no = str(MADRID_DISTRICTS[k])
                 res_nom = k
-                
-    return res_no, res_nom
+
+    salida.append((res_no, res_nom))
 
 def main():
     print("\n=== Generando datasheet OBRAS ===")
@@ -124,8 +147,20 @@ def main():
 
     df = pd.read_csv(io.BytesIO(r.content), sep=";", dtype=str).fillna("")
 
-    df["FECHA_INIC"] = df["FECHA_INIC"].apply(parse_date_safe)
-    df["FECHA_FINA"] = df["FECHA_FINA"].apply(parse_date_safe)
+    #convierte fechas con funcion segura
+    fecha_inic_vals = []
+    for value in df["FECHA_INIC"]:
+        out_date = []
+        parse_date_safe(value, out_date)
+        fecha_inic_vals.append(out_date[0])
+    df["FECHA_INIC"] = fecha_inic_vals
+
+    fecha_fina_vals = []
+    for value in df["FECHA_FINA"]:
+        out_date = []
+        parse_date_safe(value, out_date)
+        fecha_fina_vals.append(out_date[0])
+    df["FECHA_FINA"] = fecha_fina_vals
 
     df["FECHA"] = df["FECHA_INIC"].combine_first(df["FECHA_FINA"])
     df = df.dropna(subset=["FECHA"])
@@ -139,9 +174,12 @@ def main():
             mes = f"{fecha.month:02d}"
             año = str(fecha.year)
 
-            no_dist, nom_dist = resolve_district(
-                r.get("DISTRITO_S", "") or r.get("DENOMINACI", "")
+            out_dist = []
+            resolve_district(
+                r.get("DISTRITO_S", "") or r.get("DENOMINACI", ""),
+                out_dist
             )
+            no_dist, nom_dist = out_dist[0]
 
             finished = False
             if isinstance(r["FECHA_FINA"], datetime):
