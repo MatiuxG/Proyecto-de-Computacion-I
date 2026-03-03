@@ -1,25 +1,24 @@
 import re
 import io
 import unicodedata
-import csv
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime, date as date_cls
+from datetime import date as date_cls
 import requests
 import pandas as pd
-import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 
-# --- CONFIGURACIÓN ---
+#configuracion general del script
 DATASET_PAGES = [
     "https://datos.madrid.es/portal/site/egob/menuitem.c05c1f754a33a9fbe4b2e4b284f1a5a0/?vgnextoid=7c2843010d9c3610VgnVCM2000001f4a900aRCRD&vgnextchannel=374512b9ace9f310VgnVCM100000171f5a0aRCRD&vgnextfmt=default",
     "https://datos.madrid.es/portal/site/egob/menuitem.c05c1f754a33a9fbe4b2e4b284f1a5a0/?vgnextoid=40085fb0e70b7410VgnVCM2000000c205a0aRCRD&vgnextchannel=374512b9ace9f310VgnVCM100000171f5a0aRCRD&vgnextfmt=default",
 ]
 
-OUTPUT_DIR = Path("Accidentes_Scripts/Resultados")
+#el output se guarda en una carpeta Resultados al lado del script,
+OUTPUT_DIR = Path(__file__).resolve().parent / "Resultados"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUT_FILE = OUTPUT_DIR / "datasheet_accidentes.csv"
 
+#cabecera simple para que no se nos bloque por no identificarnos
 HEADERS = {"User-Agent": "MateoScraperBot/1.1"}
 FINAL_COLUMNS = ["Dia", "Mes", "Año", "district_code", "district_name", "total_de_accidentes"]
 
@@ -34,87 +33,117 @@ MADRID_DISTRICTS = {
     "20": "San Blas-Canillejas", "21": "Barajas",
 }
 
-# --- FUNCIONES DE SOPORTE ---
+#funciones para procesar los datos
 
-def fetch_text(url: str) -> str:
-    r = requests.get(url, headers=HEADERS, timeout=60)
-    r.raise_for_status()
-    if not r.encoding or r.encoding.lower() in ("ascii", "utf-8"):
-        r.encoding = r.apparent_encoding or "utf-8"
-    return r.text
+def fetch_text(url):
+    #pide una pagina y devuelve el html como texto 
+    response = requests.get(url, headers=HEADERS, timeout=60)
+    response.raise_for_status()
+    #ajusta la codificacion si el servidor no la dice o no la da bien 
+    if not response.encoding or response.encoding.lower() in ("ascii", "utf-8"):
+        response.encoding = response.apparent_encoding or "utf-8"
+    return response.text
 
-def find_download_links_html(soup: BeautifulSoup, base_url: str) -> List[Tuple[str, str]]:
+def find_download_links_html(soup, base_url):
+    #saca posibles enlaces de descarga desde html y los guarda en una lista
     links = []
-    for a in soup.find_all("a", href=True):
-        label = " ".join(a.get_text(" ", strip=True).split())
-        href = a["href"].strip()
-        if href.startswith("/"):
+    for anchor in soup.find_all("a", href=True): #recorremos todos los enlaces con href
+        #limpia el texto visible del enlace
+        label = " ".join(anchor.get_text(" ", strip=True).split())
+        href_value = anchor.get("href")
+        #limpia el href y lo convierte a url absoluta si es relativo 
+        href = str(href_value).strip() if href_value is not None else "" #si no hay href, lo dejamos como cadena vacia
+        if href.startswith("/"): #si el enlace empieza con /, lo convertimos a url absoluta usando la base
             from urllib.parse import urljoin
             href = urljoin(base_url, href)
-        
-        low = (label + " " + href).lower()
-        if ("descarg" in low) or href.lower().endswith((".csv", ".json", ".geojson")):
+
+        #solo guardamos enlaces que parecen descargas
+        combined_text = (label + " " + href).lower()
+        if ("descarg" in combined_text) or href.lower().endswith((".csv", ".json", ".geojson")):
             links.append((label, href))
-            
+
     def score(item):
-        u = item[1].lower()
-        val = 5
-        if u.endswith(".csv"): val = 0
-        elif u.endswith((".json", ".geojson")): val = 1
-        return val
-        
+        #prioriza csv, luego json/geojson
+        url_lower = item[1].lower()
+        value = 5
+        if url_lower.endswith(".csv"):
+            value = 0
+        elif url_lower.endswith((".json", ".geojson")):
+            value = 1
+        return value
+
+    #ordena para intentar primero los mejores formatos
     links.sort(key=score)
     return links
 
-def find_downloads(page_url: str, html_text: str) -> List[str]:
+def find_downloads(page_url, html_text):
+    #decide como extraer urls de descarga
     res = []
-    if "<rdf:RDF" in html_text or "http://www.w3.org/ns/dcat#" in html_text:
-        # Simplificación de RDF
-        res = [re.findall(r'rdf:resource="([^"]+)"', html_text)] # Ejemplo simplificado para flujo único
+    if "<rdf:RDF" in html_text or "http://www.w3.org/ns/dcat#" in html_text: #miramos si encontramso indicios de que es un documento RDF
+        #rdf suele traer urls directas a los ficheros
+        res = re.findall(r'rdf:resource="([^"]+)"', html_text) #[^"]+ busca cualquier cosa que no sea comillas dentro del valor de rdf:resource
     else:
+        #html normal con enlaces visibles
         soup = BeautifulSoup(html_text, "html.parser")
         pairs = find_download_links_html(soup, page_url)
-        res = [u for _, u in pairs]
+        res = [u for _, u in pairs] #solo nos quedamos con las urls, no con las etiquetas
     return res
 
-def load_remote_table(url: str) -> Optional[pd.DataFrame]:
+def load_remote_table(url):
+    #descarga el fichero y lo convierte a tabla
     df_res = None
     try:
-        r = requests.get(url, headers=HEADERS, timeout=60)
-        u = url.lower()
-        if u.endswith(".csv"):
-            df_res = pd.read_csv(io.StringIO(r.text), sep=None, engine="python", dtype=str)
-        elif u.endswith((".json", ".geojson")):
-            data = r.json()
+        response = requests.get(url, headers=HEADERS, timeout=60)
+        response.raise_for_status()
+        url_lower = url.lower()
+        if url_lower.endswith(".csv"):
+            df_res = pd.read_csv(io.StringIO(response.text), sep=None, engine="python", dtype=str) #sep=None con engine python permite detectar el separador automaticamente, dtype=str para evitar problemas con tipos mixtos
+        elif url_lower.endswith((".json", ".geojson")):
+            data = response.json()
             if isinstance(data, dict) and "features" in data:
-                df_res = pd.json_normalize(data["features"])
+                #geojson, normalizamos la lista de features
+                df_res = pd.json_normalize(data["features"]) #lo convierte en tabla
             else:
-                df_res = pd.json_normalize(data)
+                df_res = pd.json_normalize(data) #tmb en tabla
     except Exception as e:
         print(f"Error en carga: {e}")
     return df_res
 
-def filter_by_window(df: pd.DataFrame, start: date_cls, end: date_cls) -> pd.DataFrame:
-    df_out = df.iloc[0:0]
+def filter_by_window(df, start, end):
+    #filtra filas dentro del rango de fechas
+    df_out = df.iloc[0:0] #df vacio pero tiene las mismas columnas que el original
     if not df.empty:
         keys = ["fecha", "date", "timestamp", "f_accidente"]
-        dt_col = next((c for c in df.columns if any(k in c.lower() for k in keys)), None)
+        dt_col = next((c for c in df.columns if any(k in c.lower() for k in keys)), None) #busca la columna de fecha con las keys de antes, si no la deja vacia
         if dt_col:
             ts = pd.to_datetime(df[dt_col], errors="coerce", dayfirst=True)
-            mask = (ts.dt.date >= start) & (ts.dt.date <= end)
+            ts_series = pd.Series(ts)
+            #pasa cada valor a fecha simple para comparar con date (pndas)
+            date_series = ts_series.map(lambda x: x.date() if pd.notna(x) else pd.NaT)
+            #parte 1: fechas iguales o despues del inicio
+            from_start = date_series >= start
+            #parte 2: fechas iguales o antes del final
+            until_end = date_series <= end
+            #solo nos quedamos con las que cumplen ambas condiciones
+            mask = from_start & until_end
             df_out = df[mask]
     return df_out
 
-# --- PROCESAMIENTO ---
+#procesamiento principal
 
-def process_one(page_url: str, start: date_cls, end: date_cls) -> pd.DataFrame:
+def process_one(page_url, start, end):
+    #procesa una ficha y devuelve su dataframe unido
     dfs = []
     try:
-        html = fetch_text(page_url)
-        urls = find_downloads(page_url, html)
-        for dl in urls:
-            df = load_remote_table(dl)
+        #primero se mira la pagina de datos
+        page_html = fetch_text(page_url)
+        #luego buscamos los enlaces de descarga
+        download_urls = find_downloads(page_url, page_html)
+        for download_url in download_urls:
+            #intentamos cargar cada fichero
+            df = load_remote_table(download_url)
             if df is not None:
+                #solo nos quedamos con fechas dentro del rango
                 df = filter_by_window(df, start, end)
                 if not df.empty:
                     dfs.append(df)
@@ -126,51 +155,73 @@ def process_one(page_url: str, start: date_cls, end: date_cls) -> pd.DataFrame:
         res = pd.concat(dfs, ignore_index=True, sort=False)
     return res
 
-def build_contract(df_raw: pd.DataFrame) -> pd.DataFrame:
+def build_contract(df_raw):
+    #deja el dataframe con columnas normales
     res = pd.DataFrame(columns=FINAL_COLUMNS)
     if not df_raw.empty:
+        #todo en COPIA, NO TOCAR EL ORIGINAL
         df = df_raw.copy()
-        # Limpiar columnas
-        df.columns = [unicodedata.normalize("NFD", c.lower()).replace(" ", "_") for c in df.columns]
+        #normaliza nombres de columnas
+        df.columns = [
+            "".join(ch for ch in unicodedata.normalize("NFD", c.lower()) if unicodedata.category(ch) != "Mn")
+            .replace(" ", "_")
+            for c in df.columns
+        ]
+
+        #busca la columna de fecha 
+        dt_col = next((c for c in df.columns if "fecha" in c), None)
+        if dt_col is None and len(df.columns) > 0:
+            #si no hay columna clara, usamos la primera
+            dt_col = df.columns[0]
+        if dt_col is not None:
+            dt_parsed = pd.to_datetime(df[dt_col], errors="coerce", dayfirst=True)
+        else:
+            dt_parsed = pd.to_datetime(pd.Series([], dtype="object"), errors="coerce", dayfirst=True)
+        dt_series = pd.Series(dt_parsed)
         
-        # Extraer Fecha
-        dt_col = next((c for c in df.columns if "fecha" in c), df.columns[0])
-        dt_parsed = pd.to_datetime(df[dt_col], errors="coerce", dayfirst=True)
+        #descompone fecha en dia, mes y año
+        res["Dia"] = dt_series.dt.day
+        res["Mes"] = dt_series.dt.month
+        res["Año"] = dt_series.dt.year
         
-        res["Dia"] = dt_parsed.dt.day
-        res["Mes"] = dt_parsed.dt.month
-        res["Año"] = dt_parsed.dt.year
-        
-        # Distrito
+        #extrae codigo de distrito si existe
         dcode_col = next((c for c in df.columns if "cod" in c and "distrito" in c), None)
         if dcode_col:
-            res["district_code"] = df[dcode_col].astype(str).str.extract(r"(\d+)")[0].fillna("NA")
+            #convierte a texto por si hay numeros mezclados con letras
+            district_raw = df[dcode_col].astype(str)
+            #saca solo la parte numerica (primer grupo de digitos)
+            district_digits = district_raw.str.extract(r"(\d+)")[0]
+            #rellena vacios con NA (asi nos evitamos los nulos)
+            res["district_code"] = district_digits.fillna("NA")
         else:
             res["district_code"] = "NA"
-            
+        #mapea codigo a nombre de distrito
         res["district_name"] = res["district_code"].apply(
-            lambda x: MADRID_DISTRICTS.get(str(x).zfill(2), "NA")
+            #rellena con ceros a la izquierda y busca en el diccionario
+            lambda x: MADRID_DISTRICTS.get(str(x).zfill(2), "NA") #si no lo encuentra sera NA
         )
     return res
 
 def main():
-    start_date = date_cls(2022, 1, 1)
+    start_date = date_cls(2022, 1, 1) #se pone que fechas queremos
     end_date = date_cls(2025, 10, 31)
     all_data = []
 
     for url in DATASET_PAGES:
+        #procesa cada pagina y guarda lo que encuentre
         df = process_one(url, start_date, end_date)
         if not df.empty:
             all_data.append(df)
 
     if all_data:
+        #unimos todo lo descargado
         raw = pd.concat(all_data, ignore_index=True)
         standardized = build_contract(raw)
         
-        # Agregación
+        #agrega por dia y distrito
         group_cols = ["Dia", "Mes", "Año", "district_code", "district_name"]
+        #cuenta filas por cada combinacion
         final_df = standardized.groupby(group_cols).size().reset_index(name='total_de_accidentes')
-        
         final_df.to_csv(OUT_FILE, index=False, sep=";", encoding="utf-8-sig")
         print(f"Archivo generado: {OUT_FILE}")
     else:
