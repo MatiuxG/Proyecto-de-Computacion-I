@@ -12,7 +12,8 @@ HEADERS = {
     "User-Agent": "MateoAirScraper/2.0",
     "Accept": "*/*"
 }
-PAGES = ["https://datos.madrid.es/sites/v/index.jsp?vgnextoid=aecb88a7e2b73410VgnVCM2000000c205a0aRCRD"]
+#vista /downloads del portal CKAN (la antigua redirige aqui pero sin enlaces directos)
+PAGES = ["https://datos.madrid.es/dataset/201410-0-calidad-aire-diario/downloads"]
 STATION_CATALOG_CANDIDATES = [
     "https://datos.madrid.es/egob/catalogo/201210-0-estaciones-calidad-aire.csv",
     "https://datos.madrid.es/egob/catalogo/201210-0-red-calidad-aire-estaciones.csv",

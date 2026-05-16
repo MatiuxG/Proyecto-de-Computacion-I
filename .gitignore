@@ -1,6 +1,33 @@
-**/__pycache__/
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# Configuración local con secretos
+.env
+
+# Modelos entrenados
+modelos_guardados/
+*.pkl
+
+# Cache de Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Resultados generados por los scripts
 **/Resultados/
+
+# Datos crudos descargados localmente (no se versionan)
 **/DatosHistoricos/
 **/DocumentacionNecesaria/
-.venv/
-modelos_guardados/
+
+# Cache de zips del scraper de trafico (cada zip son ~90MB)
+**/.cache_zips/
+
+# Sistema operativo / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
