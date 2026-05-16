@@ -1,6 +1,6 @@
-"""Entrenamiento de un Árbol de Decisión.
+"""Entrenamiento de un Arbol de Decision.
 
-Mismo refactor que random_forest.py: métricas correctas y split temporal.
+Mismo refactor que random_forest.py: metricas correctas y split temporal.
 """
 
 import joblib
@@ -23,8 +23,7 @@ PARAMETROS_GRID = {
 
 
 def entrenamiento_arbol_de_decision(target_usuario, features_seleccionadas, ruta_guardado):
-    """Entrena un árbol de decisión y devuelve el resumen con métricas."""
-
+    #entrena un arbol de decision, lo guarda y devuelve el resumen con metricas
     df = cargar_dataset()
     columna_target = MAPA_TARGETS.get(target_usuario, "target_accidentes")
 

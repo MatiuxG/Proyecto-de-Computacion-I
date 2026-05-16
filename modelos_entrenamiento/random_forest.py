@@ -1,12 +1,12 @@
-"""Entrenamiento de Random Forest para la predicción de incidencias.
+"""Entrenamiento de Random Forest para la prediccion de incidencias.
 
 Refactor 2026-05-16:
-  - Métricas correctas (accuracy/precision/recall/F1/ROC-AUC) en vez
-    de MAE/MSE (que eran de regresión).
-  - Split temporal (test = fechas más recientes) en vez de aleatorio.
-  - Pequeña búsqueda de hiperparámetros con GridSearchCV usando
-    TimeSeriesSplit para respetar el orden temporal también en la
-    validación cruzada.
+  - Metricas correctas (accuracy/precision/recall/F1/ROC-AUC) en vez
+    de MAE/MSE (que eran de regresion).
+  - Split temporal (test = fechas mas recientes) en vez de aleatorio.
+  - Busqueda pequeña de hiperparametros con GridSearchCV usando
+    TimeSeriesSplit para respetar el orden temporal tambien en la
+    validacion cruzada.
 """
 
 import joblib
@@ -22,10 +22,10 @@ from .utils import (
 )
 
 
-# Mantenemos la búsqueda pequeña para que entrene rápido.
-# Limitamos max_depth (sin None) porque con dataset horario de 800k filas
-# los árboles sin profundidad maxima salen de varios GB, no caben en git
-# y consumen demasiada RAM para cargar en LORCA.
+#busqueda pequeña para que entrene rapido.
+#limitamos max_depth (sin None) porque con dataset horario de 800k filas
+#los arboles sin profundidad maxima salen de varios GB, no caben en git
+#y consumen demasiada RAM para cargar en LORCA
 PARAMETROS_GRID = {
     "n_estimators": [50, 100],
     "max_depth": [10, 15],
@@ -34,8 +34,8 @@ PARAMETROS_GRID = {
 
 
 def entrenamiento_random_forest(target_usuario, features_seleccionadas, ruta_guardado):
-    """Entrena un Random Forest y devuelve el resumen con todas las métricas."""
-
+    #entrena un Random Forest, lo guarda comprimido y devuelve el resumen
+    #con todas las metricas
     df = cargar_dataset()
     columna_target = MAPA_TARGETS.get(target_usuario, "target_accidentes")
 
@@ -43,8 +43,8 @@ def entrenamiento_random_forest(target_usuario, features_seleccionadas, ruta_gua
         df, columna_target, features_seleccionadas
     )
 
-    # TimeSeriesSplit divide el train en bloques temporales para CV.
-    # Así el GridSearch tampoco mezcla pasado y futuro.
+    #TimeSeriesSplit divide el train en bloques temporales para CV.
+    #asi el GridSearch tampoco mezcla pasado y futuro
     cv = TimeSeriesSplit(n_splits=3)
 
     busqueda = GridSearchCV(
@@ -58,8 +58,8 @@ def entrenamiento_random_forest(target_usuario, features_seleccionadas, ruta_gua
 
     modelo = busqueda.best_estimator_
     #compress=3 reduce el .pkl 3-5x sin penalizar la velocidad de carga;
-    #importante para que entre en git (limite 100MB por archivo) y para
-    #no inflar la RAM al desplegar en LORCA.
+    #importante para que entre en git (limite 100MB) y para no inflar
+    #la RAM al desplegar en LORCA
     joblib.dump(modelo, ruta_guardado, compress=3)
 
     metricas = evaluar_modelo(modelo, X_test, y_test)

@@ -1,0 +1,15 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+*.pyo
+.cache_zips
+modelos_guardados
+Resultados
+**/Resultados
+*.csv
+.env
+.python-version
+INSTALACION_LORCA.md
+README.md

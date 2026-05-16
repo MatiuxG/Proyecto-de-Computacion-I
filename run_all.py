@@ -1,5 +1,5 @@
 """
-Pipeline completo del Sistema de Detección de Incidencias.
+Pipeline completo del Sistema de Deteccion de Incidencias.
 
 Ejecuta en orden:
   1. Los scrapers de cada fuente (genera los CSV de Resultados/).
@@ -7,11 +7,11 @@ Ejecuta en orden:
   3. Entrenamiento de los tres modelos (Random Forest, Decision Tree, SVM)
      contra el target por defecto (Accidentes).
 
-Uso típico:
-    python run_all.py                    # todo el pipeline
-    python run_all.py --skip-scrapers    # solo unir y entrenar
-    python run_all.py --solo-etl         # scrapers + main, sin entrenar
-    python run_all.py --solo-modelos     # solo entrenamiento
+Uso tipico:
+    python run_all.py                    #todo el pipeline
+    python run_all.py --skip-scrapers    #solo unir y entrenar
+    python run_all.py --solo-etl         #scrapers + main, sin entrenar
+    python run_all.py --solo-modelos     #solo entrenamiento
     python run_all.py --target "Calidad Aire"
 """
 
@@ -25,63 +25,61 @@ ROOT = Path(__file__).resolve().parent
 MODELOS_DIR = ROOT / "modelos_guardados"
 
 
-# Lista de scrapers a ejecutar. Cada uno es independiente.
-# Tráfico histórico es el que alimenta el dataset unificado (mensual).
-# El realtime se mantiene por si en algún momento queremos un snapshot del día.
+#lista de scrapers a ejecutar. cada uno es independiente.
+#trafico historico es el que alimenta el dataset unificado (mensual);
+#el realtime se mantiene por si en algun momento queremos un snapshot del dia
 SCRAPERS = [
     ("Accidentes",        ROOT / "Accidentes_Scripts"  / "Accidentes.py"),
     ("Calidad del aire",  ROOT / "CalidadAire_Scripts" / "CalidadAire.py"),
     ("Clima",             ROOT / "Clima_Scripts"       / "Clima.py"),
     ("Emergencias",       ROOT / "Emergencias_Scripts" / "emergencias_scraper.py"),
     ("Obras",             ROOT / "Obras_Scripts"       / "Obras.py"),
-    ("Tráfico histórico", ROOT / "Trafico_Scripts"     / "TraficoHistorico.py"),
-    ("Tráfico realtime",  ROOT / "Trafico_Scripts"     / "TraficoScrapper.py"),
+    ("Trafico historico", ROOT / "Trafico_Scripts"     / "TraficoHistorico.py"),
+    ("Trafico realtime",  ROOT / "Trafico_Scripts"     / "TraficoScrapper.py"),
 ]
 
 
 def ejecutar_script(ruta_script, etiqueta):
-    """Lanza un script Python y devuelve True si terminó bien."""
+    #lanza un script python y devuelve True si termino con codigo 0
     print(f"\n=== {etiqueta} ===")
+    ok = False
 
     if not ruta_script.exists():
         print(f"  [Saltado] No existe {ruta_script}")
-        return False
-
-    resultado = subprocess.run(
-        [sys.executable, str(ruta_script)],
-        cwd=ruta_script.parent,
-    )
-
-    if resultado.returncode == 0:
-        ok = True
     else:
-        print(f"  [Error] {ruta_script} terminó con código {resultado.returncode}")
-        ok = False
+        resultado = subprocess.run(
+            [sys.executable, str(ruta_script)],
+            cwd=ruta_script.parent,
+        )
+
+        if resultado.returncode == 0:
+            ok = True
+        else:
+            print(f"  [Error] {ruta_script} termino con codigo {resultado.returncode}")
 
     return ok
 
 
 def lanzar_scrapers():
-    """Ejecuta cada scraper. Si alguno falla, sigue con el resto."""
+    #ejecuta cada scraper en orden. si alguno falla, sigue con el resto
     print("\n[FASE 1] Scrapers")
-
     for etiqueta, ruta in SCRAPERS:
         ejecutar_script(ruta, etiqueta)
 
 
 def lanzar_etl():
-    """Ejecuta main/main.py para unir las fuentes."""
-    print("\n[FASE 2] Unificación de datos (ETL)")
+    #ejecuta main/main.py para unir las fuentes
+    print("\n[FASE 2] Unificacion de datos (ETL)")
     ejecutar_script(ROOT / "main" / "main.py", "main.py")
 
 
 def lanzar_entrenamientos(target):
-    """Entrena los tres modelos contra el target indicado."""
+    #entrena los tres modelos contra el target indicado y muestra metricas
     print(f"\n[FASE 3] Entrenamiento de modelos (target: {target})")
 
     MODELOS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Importamos aquí para no exigir sklearn en la fase de scraping.
+    #import diferido para no exigir sklearn en la fase de scraping
     sys.path.insert(0, str(ROOT))
     from modelos_entrenamiento.random_forest import entrenamiento_random_forest
     from modelos_entrenamiento.decisiontree import entrenamiento_arbol_de_decision
@@ -90,16 +88,16 @@ def lanzar_entrenamientos(target):
 
     df = cargar_dataset()
     features = features_por_defecto(df, target)
-    # No usamos las columnas target como features (eso sería trampa).
+    #excluimos columnas target como features para no hacer trampa
     features = [c for c in features if not c.startswith("target_")]
 
     print(f"  Features usadas: {features}")
     print(f"  Filas totales:   {len(df)}\n")
 
     entrenadores = [
-        ("Random Forest",     entrenamiento_random_forest, MODELOS_DIR / "random_forest.pkl"),
-        ("Decision Tree",     entrenamiento_arbol_de_decision, MODELOS_DIR / "decision_tree.pkl"),
-        ("SVM",               entrenamiento_svm,           MODELOS_DIR / "svm.pkl"),
+        ("Random Forest", entrenamiento_random_forest,     MODELOS_DIR / "random_forest.pkl"),
+        ("Decision Tree", entrenamiento_arbol_de_decision, MODELOS_DIR / "decision_tree.pkl"),
+        ("SVM",           entrenamiento_svm,               MODELOS_DIR / "svm.pkl"),
     ]
 
     for etiqueta, funcion, ruta in entrenadores:
@@ -112,7 +110,7 @@ def lanzar_entrenamientos(target):
 
 
 def imprimir_resumen(resumen):
-    """Muestra las métricas del modelo entrenado en un formato leíble."""
+    #muestra las metricas del modelo entrenado en formato leible
     print(f"  Accuracy:  {resumen['accuracy']:.3f}")
     print(f"  Precision: {resumen['precision']:.3f}")
     print(f"  Recall:    {resumen['recall']:.3f}")
@@ -123,11 +121,12 @@ def imprimir_resumen(resumen):
 
 
 def main():
+    #parsea argumentos y decide que fases ejecutar
     parser = argparse.ArgumentParser(description="Pipeline completo de PC1.")
     parser.add_argument("--skip-scrapers", action="store_true",
                         help="No ejecutar scrapers (reutiliza los CSV existentes).")
     parser.add_argument("--solo-etl", action="store_true",
-                        help="Solo scrapers y unión de datos, sin entrenar.")
+                        help="Solo scrapers y union de datos, sin entrenar.")
     parser.add_argument("--solo-modelos", action="store_true",
                         help="Solo entrenamiento (asume que el dataset ya existe).")
     parser.add_argument("--target", default="Accidentes",

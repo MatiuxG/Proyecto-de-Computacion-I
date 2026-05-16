@@ -1,44 +1,31 @@
 """
-Unifica los CSV de cada fuente (tráfico, accidentes, calidad del aire,
-emergencias, clima y obras) en un único dataset listo para entrenar.
+Unifica los CSV de cada fuente (trafico, accidentes, calidad del aire,
+emergencias, clima y obras) en un unico dataset listo para entrenar.
 
-Genera features de calendario (día de la semana, fin de semana, festivo)
-y construye targets binarios usando el percentil 90 del histórico
-(una incidencia "alta" es estar en el top 10% del histórico, no por
-encima de la mediana como tenía la versión anterior).
+Genera features de calendario (dia de la semana, fin de semana, festivo)
+y construye targets binarios usando el percentil 90 del historico
+(una incidencia "alta" es estar en el top 10% del historico, no por
+encima de la mediana como tenia la version anterior).
 """
 
-import os
 from pathlib import Path
 
 import pandas as pd
 import holidays
 
 
-# -------------------------------------------------------
-#  CONFIGURACIÓN
-# -------------------------------------------------------
-
-# Carpeta raíz del proyecto (un nivel por encima de /main).
+#raiz del proyecto
 BASE = Path(__file__).resolve().parent.parent
 OUT_FILE = BASE / "Resultados" / "dataset_unificado.csv"
 
-# Percentil que marca cuándo una jornada se considera "incidencia alta".
-# 90 = top 10% de los días-distritos. Lo dejamos como constante por si
-# queremos hacerlo más estricto (95) o más laxo (80).
+#percentil que marca incidencia alta; 90 = top 10% del historico
 PERCENTIL_INCIDENCIA = 90
 
-# Calendario de festivos de la Comunidad de Madrid.
-# Se calcula una sola vez al cargar el módulo.
+#festivos de la Comunidad de Madrid
 FESTIVOS_MADRID = holidays.Spain(subdiv="MD", years=range(2020, 2030))
 
 
-# Cada fuente del dataset. Cada tupla describe:
-#   nombre     → etiqueta interna
-#   ruta       → CSV relativo a la raíz
-#   mapeo      → renombra columnas del CSV al estándar interno
-#   columna    → columna numérica a agregar
-#   operacion  → cómo agregar (sum / mean)
+#fuentes del dataset: (nombre, ruta, mapeo_columnas, columna_valor, operacion)
 FUENTES = [
     (
         "accidentes",
@@ -77,8 +64,7 @@ FUENTES = [
     ),
 ]
 
-# El clima tiene varias columnas que nos interesan, no una sola.
-# Lo procesamos aparte de FUENTES.
+#el clima tiene varias columnas que nos interesan, no una sola. lo procesamos aparte
 CLIMA_RUTA = "Clima_Scripts/Resultados/datasheet_clima.csv"
 CLIMA_COLUMNAS_RENOMBRE = {
     "district_code": "codigo_de_distrito",
@@ -91,27 +77,20 @@ CLIMA_COLUMNAS_RENOMBRE = {
 CLIMA_COLUMNAS_FINALES = ["temp_media", "temp_max", "temp_min", "precipitacion", "viento_medio"]
 
 
-# -------------------------------------------------------
-#  CARGA DE CADA FUENTE
-# -------------------------------------------------------
-
 def replicar_en_24_horas(df):
-    """Para fuentes que no tienen granularidad horaria (clima diario, obras),
-    replicamos cada fila 24 veces (una por hora) para que el merge con las
-    fuentes horarias case en TODAS las horas del día y no solo en hora=0."""
+    #para fuentes sin granularidad horaria (clima diario, obras), replicamos
+    #cada fila 24 veces (una por hora) para que el merge con las fuentes
+    #horarias case en TODAS las horas y no solo en hora=0
     horas = pd.DataFrame({"hora": list(range(24))})
-    return df.merge(horas, how="cross")
+    res = df.merge(horas, how="cross")
+    return res
 
 
 def cargar_y_agrupar(nombre, ruta_csv, mapeo, columna_valor, operacion):
-    """Lee un CSV, normaliza columnas y agrupa por hora-distrito.
-
-    Si el CSV trae columna `hora` (accidentes, calidad aire, emergencias, tráfico)
-    se agrupa por (dia, mes, año, hora, distrito). Si no la trae (obras), se agrupa
-    por día y luego se replica el valor en las 24 horas del día.
-
-    Devuelve un DataFrame o None si el archivo no existe / falla la carga.
-    """
+    #lee un csv, normaliza columnas y agrupa por hora-distrito.
+    #si el csv trae columna `hora` agrupa por (dia, mes, año, hora, distrito);
+    #si no la trae se agrupa por dia y se replica el valor en 24 horas.
+    #devuelve None si el archivo no existe o falla la carga
     df_resultado = None
 
     if not ruta_csv.exists():
@@ -121,13 +100,11 @@ def cargar_y_agrupar(nombre, ruta_csv, mapeo, columna_valor, operacion):
             df = pd.read_csv(ruta_csv, sep=";", encoding="utf-8")
             df.columns = df.columns.str.lower().str.strip()
 
-            # Renombramos las columnas del origen a las nuestras
-            # (las claves del mapeo se pasan también a minúsculas).
+            #renombramos columnas del origen al nombre interno (claves a minusculas)
             mapeo_lower = {k.lower(): v for k, v in mapeo.items()}
             df = df.rename(columns=mapeo_lower)
 
-            # Si la fuente trae una columna "fecha" suelta, generamos
-            # dia/mes/año a partir de ella.
+            #si la fuente trae una columna "fecha" suelta, sacamos dia/mes/año de ella
             if "fecha" in df.columns and "dia" not in df.columns:
                 df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
                 df["dia"] = df["fecha"].map(lambda x: x.day if pd.notna(x) else None)
@@ -136,7 +113,7 @@ def cargar_y_agrupar(nombre, ruta_csv, mapeo, columna_valor, operacion):
 
             tiene_hora = "hora" in df.columns
 
-            # Aseguramos tipos numéricos en las claves de agrupación.
+            #aseguramos tipos numericos en las claves de agrupacion
             claves_base = ["dia", "mes", "año", "codigo_de_distrito"]
             for col in claves_base:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -146,8 +123,8 @@ def cargar_y_agrupar(nombre, ruta_csv, mapeo, columna_valor, operacion):
             else:
                 claves = claves_base
 
-            # Para "obras" usamos count en lugar de sum porque la columna
-            # "terminada" es texto (true/false). Lo convertimos a 1.
+            #para "obras" usamos count en lugar de sum porque la columna
+            #"terminada" es texto (true/false); lo convertimos a 1 antes
             if operacion == "count":
                 df[columna_valor] = 1
                 df_resultado = (
@@ -163,7 +140,7 @@ def cargar_y_agrupar(nombre, ruta_csv, mapeo, columna_valor, operacion):
                     .reset_index()
                 )
 
-            # Si la fuente no tenía hora, la replicamos en las 24 horas del día
+            #si la fuente no tenia hora la replicamos en las 24 horas
             if not tiene_hora and df_resultado is not None and not df_resultado.empty:
                 df_resultado = replicar_en_24_horas(df_resultado)
 
@@ -174,13 +151,12 @@ def cargar_y_agrupar(nombre, ruta_csv, mapeo, columna_valor, operacion):
 
 
 def cargar_clima(ruta_csv):
-    """Carga el CSV de clima (AEMET solo da resumen diario, sin hora).
-    Replicamos el valor del día en las 24 horas para casar con el resto.
-    """
+    #carga el csv de clima (AEMET solo da resumen diario, sin hora) y
+    #replica el valor del dia en las 24 horas para casar con el resto
     df_resultado = None
 
     if not ruta_csv.exists():
-        print(f"  [Aviso] No se encuentra {ruta_csv} (no habrá variables de clima)")
+        print(f"  [Aviso] No se encuentra {ruta_csv} (no habra variables de clima)")
     else:
         try:
             df = pd.read_csv(ruta_csv, sep=";", encoding="utf-8")
@@ -212,17 +188,10 @@ def cargar_clima(ruta_csv):
     return df_resultado
 
 
-# -------------------------------------------------------
-#  FEATURES DE CALENDARIO
-# -------------------------------------------------------
-
 def añadir_features_calendario(df):
-    """Crea día_semana (0=lunes..6=domingo), es_finde, es_festivo y es_hora_punta.
-
-    es_hora_punta marca 1 si la hora cae en una franja típica de tráfico
-    intenso en Madrid: 7-10 mañana o 17-20 tarde. Damos así al modelo una
-    pista del ritmo urbano sin tener que aprenderlo de cero desde la hora cruda.
-    """
+    #crea dia_semana (0=lunes..6=domingo), es_finde, es_festivo y es_hora_punta.
+    #es_hora_punta marca 1 en franjas tipicas de trafico intenso en Madrid
+    #(7-10 mañana y 17-20 tarde) para dar al modelo una pista del ritmo urbano
     fechas = pd.to_datetime(
         dict(year=df["año"], month=df["mes"], day=df["dia"]),
         errors="coerce",
@@ -247,19 +216,11 @@ def añadir_features_calendario(df):
     return df
 
 
-# -------------------------------------------------------
-#  TARGETS
-# -------------------------------------------------------
-
 def añadir_targets(df, percentil):
-    """Crea las columnas target_accidentes, target_aire y target_emergencias.
-
-    Una jornada (día-distrito) se marca como "incidencia alta" (=1) si el
-    valor está por encima del percentil indicado del histórico. Por defecto
-    el percentil 90 (top 10% más alto). En la versión anterior se usaba
-    la mediana, lo que hacía que el 50% del dataset fuera "incidencia"
-    y el modelo no aprendiera nada útil.
-    """
+    #crea las columnas target_accidentes, target_aire y target_emergencias.
+    #una jornada (dia-distrito) se marca como "incidencia alta" (=1) si el
+    #valor supera el percentil indicado del historico. la version anterior
+    #usaba la mediana, lo que hacia que el 50% del dataset fuera "incidencia"
     pares = [
         ("target_accidentes", "total_de_accidentes"),
         ("target_aire", "valor_calidad_aire"),
@@ -276,17 +237,12 @@ def añadir_targets(df, percentil):
     return df
 
 
-# -------------------------------------------------------
-#  ORQUESTACIÓN
-# -------------------------------------------------------
-
 CLAVE_MERGE = ["dia", "mes", "año", "hora", "codigo_de_distrito"]
 
 
 def unir_fuentes():
-    """Carga todas las fuentes y devuelve el DataFrame unido por
-    (dia, mes, año, hora, codigo_de_distrito).
-    """
+    #carga todas las fuentes y devuelve el dataframe unido por
+    #(dia, mes, año, hora, codigo_de_distrito)
     df_final = None
 
     for nombre, rel_path, mapeo, columna, operacion in FUENTES:
@@ -304,7 +260,7 @@ def unir_fuentes():
                     how="outer",
                 )
 
-    # El clima se añade aparte porque trae varias columnas.
+    #el clima se añade aparte porque trae varias columnas
     df_clima = cargar_clima(BASE / CLIMA_RUTA)
     if df_clima is not None:
         if df_final is None:
@@ -321,8 +277,8 @@ def unir_fuentes():
 
 
 def crear_dataframe_vacio():
-    """Si no se cargó ninguna fuente, devolvemos un CSV con la cabecera
-    correcta para que los modelos no fallen al leerlo."""
+    #si no se cargo ninguna fuente, devolvemos un csv con la cabecera
+    #correcta para que los modelos no fallen al leerlo
     columnas = [
         "dia", "mes", "año", "hora", "codigo_de_distrito",
         "total_de_accidentes", "valor_calidad_aire",
@@ -331,22 +287,25 @@ def crear_dataframe_vacio():
         "dia_semana", "es_finde", "es_festivo", "es_hora_punta",
         "target_accidentes", "target_aire", "target_emergencias",
     ]
-    return pd.DataFrame(columns=columnas)
+    res = pd.DataFrame(columns=columnas)
+    return res
 
 
 def main():
+    #orquesta la union: lee cada fuente, las cruza, añade features y targets,
+    #y escribe el dataset final
     print(f"[Info] Uniendo fuentes desde {BASE}")
     df_final = unir_fuentes()
 
     if df_final is None:
-        print("[Aviso] No se cargó ninguna fuente, se generará un CSV vacío.")
+        print("[Aviso] No se cargo ninguna fuente, se generara un CSV vacio.")
         df_final = crear_dataframe_vacio()
     else:
         df_final = df_final.fillna(0)
         df_final = añadir_features_calendario(df_final)
         df_final = añadir_targets(df_final, PERCENTIL_INCIDENCIA)
 
-    # Aseguramos un orden de columnas estable.
+    #orden estable de columnas en el csv final
     orden_columnas = [
         "dia", "mes", "año", "hora", "codigo_de_distrito",
         "dia_semana", "es_finde", "es_festivo", "es_hora_punta",

@@ -25,15 +25,15 @@ from .utils import (
 )
 
 
-# C controla la regularizacion. Grid pequeño para que sea rapido.
+#C controla la regularizacion; grid pequeño para que sea rapido
 PARAMETROS_GRID = {
     "svm__estimator__C": [0.5, 1.0, 2.0],
 }
 
 
 def entrenamiento_svm(target_usuario, features_seleccionadas, ruta_guardado):
-    """Entrena un LinearSVC calibrado y devuelve el resumen con métricas."""
-
+    #entrena un LinearSVC calibrado dentro de un pipeline con StandardScaler
+    #(SVM siempre quiere features escaladas) y devuelve el resumen
     df = cargar_dataset()
     columna_target = MAPA_TARGETS.get(target_usuario, "target_accidentes")
 
@@ -42,7 +42,7 @@ def entrenamiento_svm(target_usuario, features_seleccionadas, ruta_guardado):
     )
 
     #LinearSVC base + Calibrated para obtener predict_proba; envolvemos
-    #en pipeline con StandardScaler porque SVM siempre quiere features escaladas.
+    #en pipeline con StandardScaler porque SVM siempre quiere features escaladas
     pipeline = Pipeline([
         ("scaler", StandardScaler()),
         ("svm", CalibratedClassifierCV(
