@@ -19,23 +19,23 @@ ENCODING = "utf-8"
 CSV_SEP = ";"
 
 STATION_MAPPING = {
-    "3195": [   #Retiro
+    "3195": [   #retiro
         ("00", "Madrid"), ("01", "Centro"), ("02", "Arganzuela"), 
         ("03", "Retiro"), ("04", "Salamanca"), ("14", "Moratalaz"), ("15", "Ciudad Lineal")
     ],
-    "3129": [   #Barajas
+    "3129": [   #barajas
         ("16", "Hortaleza"), ("20", "San Blas-Canillejas"), ("21", "Barajas")
     ],
-    "3194U": [  #Ciudad universitaria
+    "3194U": [  #ciudad universitaria
         ("05", "Chamartín"), ("06", "Tetuán"), ("07", "Chamberí"), ("09", "Moncloa-Aravaca")
     ],
-    "3196": [   #Vallecas
+    "3196": [   #vallecas
         ("13", "Puente de Vallecas"), ("18", "Villa de Vallecas"), ("19", "Vicálvaro")
     ],
-    "3200": [   #Fuencarral/El Goloso
+    "3200": [   #fuencarral/el goloso
         ("08", "Fuencarral-El Pardo")
     ],
-    "3191": [   #Cuatro Vientos
+    "3191": [   #cuatro vientos
         ("10", "Latina"), ("11", "Carabanchel"), ("12", "Usera"), ("17", "Villaverde")
     ]
 }

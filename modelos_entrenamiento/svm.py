@@ -8,21 +8,29 @@ import joblib
 from datetime import datetime
 
 def entrenamiento_svm(target_usuario, features_seleccionadas, ruta_guardado):
+    #lee el dataset unificado que genera el etl
     df = pd.read_csv("Resultados/dataset_unificado.csv", sep=';')
+    #traduce el objetivo elegido a su columna etiqueta
     mapa = {"Accidentes": "target_accidentes", "Calidad Aire": "target_aire", "Emergencias": "target_emergencias"}
     col_target = mapa.get(target_usuario, "target_accidentes")
 
+    #separa variables de entrada (X) y objetivo (y)
     X, y = df[features_seleccionadas], df[col_target]
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        
+
+    #escala las variables y entrena el svm con probabilidad
     modelo = make_pipeline(StandardScaler(), SVC(probability=True, random_state=42))
     modelo.fit(X_train, y_train)
-        
+
+    #guarda el modelo y predice sobre el test para medir el error
     joblib.dump(modelo, ruta_guardado)
     preds = modelo.predict(X_test)
-        
+
     return {
-            "accuracy": modelo.score(X_test, y_test), "mae": mean_absolute_error(y_test, preds),
-            "mse": mean_squared_error(y_test, preds), "n_muestras": len(df),
-            "fecha": datetime.now().strftime("%Y-%m-%d %H:%M"), "archivo": ruta_guardado
-        }
+        "accuracy": modelo.score(X_test, y_test),
+        "mae": mean_absolute_error(y_test, preds),
+        "mse": mean_squared_error(y_test, preds),
+        "n_muestras": len(df),
+        "fecha": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "archivo": ruta_guardado
+    }

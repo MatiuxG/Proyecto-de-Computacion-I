@@ -14,9 +14,7 @@ def cargar_y_agrupar(nombre_log, ruta, mapeo, col_valor, op, resultados):
 
             if "fecha" in df.columns and "dia" not in df.columns:
                 df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
-                #1) convierte la columna fecha a tipo datetime
-                #2) para cada fila, si la fecha existe, saca dia/mes/año
-                #3) si la fecha esta vacia o mal, deja None
+                #saca dia/mes/año de la fecha (None si esta vacia o mal)
                 df["dia"] = df["fecha"].map(lambda x: x.day if pd.notna(x) else None)
                 df["mes"] = df["fecha"].map(lambda x: x.month if pd.notna(x) else None)
                 df["año"] = df["fecha"].map(lambda x: x.year if pd.notna(x) else None)
@@ -35,7 +33,7 @@ def main():
     #ruta base del proyecto
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    #fuentes a unir en un dataset final
+    #fuentes a unir en el dataset final
     fuentes = [
         ("accidentes", "Accidentes_Scripts/Resultados/datasheet_accidentes.csv", {'district_code': 'codigo_de_distrito'}, 'total_de_accidentes', 'sum'),
         ("aire", "CalidadAire_Scripts/Resultados/datasheet_calidad_aire.csv", {'no_distrito': 'codigo_de_distrito'}, 'valor_calidad_aire', 'mean'),
@@ -77,7 +75,7 @@ def main():
         ])
 
     df_final = df_final.fillna(0)
-    #crea etiquetas binarias: 1 si esta por encima de la mediana, 0 si no
+    #etiquetas binarias: 1 si supera la mediana, 0 si no
     df_final["target_accidentes"] = (df_final["total_de_accidentes"] > df_final["total_de_accidentes"].median()).astype(int)
     df_final['target_aire'] = (df_final['valor_calidad_aire'] > df_final['valor_calidad_aire'].median()).astype(int)
     df_final['target_emergencias'] = (df_final['cantidad_emergencias'] > df_final['cantidad_emergencias'].median()).astype(int)

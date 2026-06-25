@@ -20,7 +20,7 @@ def crear_directorios():
     os.makedirs(DIR_RESULTADOS, exist_ok=True)
 
 
-def listar_csv_trafico(): # lista todos los csv históricos (si no hay carpeta, devuelve lista vacía)
+def listar_csv_trafico(): #lista los csv historicos disponibles
     archivos = []
     if os.path.isdir(DIR_DATOS):
         archivos = [
@@ -30,7 +30,7 @@ def listar_csv_trafico(): # lista todos los csv históricos (si no hay carpeta, 
     return archivos
 
 
-def cargar_csv_flexible(ruta): # intenta leer un csv con varios separadores/encodings
+def cargar_csv_flexible(ruta): #lee un csv probando separadores y encodings
     df_res = None
     existe = os.path.exists(ruta)
     if existe:
@@ -41,7 +41,7 @@ def cargar_csv_flexible(ruta): # intenta leer un csv con varios separadores/enco
                 try:
                     df_temp = pd.read_csv(ruta, sep=sep, encoding=enc, nrows=10, on_bad_lines='skip')
                     if len(df_temp.columns) > 1:
-                        # si es válido, cargamos todo y marcamos como encontrado
+                        #si vale, carga todo y lo marca como encontrado
                         df_res = pd.read_csv(ruta, sep=sep, encoding=enc, on_bad_lines='skip')
                         encontrado = True
                 except:
@@ -49,14 +49,14 @@ def cargar_csv_flexible(ruta): # intenta leer un csv con varios separadores/enco
     return df_res
 
 
-def detectar_columnas(df, candidatos): # busca la primera columna que encaje en la lista de candidatos
+def detectar_columnas(df, candidatos): #primera columna que encaje con los candidatos
     col = None
     if df is not None:
         col = next((c for c in df.columns if c in candidatos), None)
     return col
 
 
-def preparar_maestro_sensores(df_ubic): # limpia columnas y construye el maestro con distrito
+def preparar_maestro_sensores(df_ubic): #construye el maestro de sensores con su distrito
     df_ubic.columns = df_ubic.columns.str.strip().str.upper()
     col_id_sensor = detectar_columnas(df_ubic, ['ID', 'CODIGO', 'COD_CENT', 'COD_UBIC'])
     col_distrito = next((c for c in df_ubic.columns if 'DISTRIT' in c), None)
@@ -91,13 +91,13 @@ def calcular_trafico_dia(df):#calcula el total diario de tráfico desde columnas
     return df
 
 
-def parsear_fecha(df, col_fecha):# intenta parsear fechas 
+def parsear_fecha(df, col_fecha): #saca dia/mes/año de la fecha
     fechas_dt = pd.to_datetime(df[col_fecha], dayfirst=False, errors='coerce')
     df['dia'] = fechas_dt.dt.day
     df['mes'] = fechas_dt.dt.month
     df['año'] = fechas_dt.dt.year
 
-    # si todo queda vacío, probamos el split por '/'
+    #si no, parte la fecha por '/'
     if df['dia'].isna().all() and df['mes'].isna().all() and df['año'].isna().all():
         split_fecha = df[col_fecha].astype(str).str.split('/', expand=True)
         if split_fecha.shape[1] >= 3:
@@ -125,7 +125,7 @@ def procesar_archivo_trafico(ruta, nombre_archivo): #lee un archivo de tráfico 
     return df
 
 
-def construir_resultado(dfs_trafico, maestro_sensores): # junta todo y calcula el tráfico medio por distrito y día
+def construir_resultado(dfs_trafico, maestro_sensores): #media de trafico por distrito y dia
     df_trafico_total = pd.concat(dfs_trafico, ignore_index=True)
     df_final = df_trafico_total.merge(maestro_sensores, on='id_sensor', how='inner')
 

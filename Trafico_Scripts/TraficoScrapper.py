@@ -60,20 +60,20 @@ def integrar_con_distritos(df_realtime):
     df_final = pd.DataFrame()
     
     if os.path.exists(ruta_maestro):
-        # Cargar el mapa de sensores
+        #carga el mapa de sensores
         df_ubic = pd.read_csv(ruta_maestro, sep=';', encoding='latin-1')
         df_ubic.columns = df_ubic.columns.str.strip().str.upper()
         
         maestro = df_ubic[['ID', 'DISTRITO']].copy()
         maestro.rename(columns={'ID': 'id_sensor', 'DISTRITO': 'id_distrito'}, inplace=True)
         
-        # Extraer el número del distrito
+        #extrae el numero del distrito
         maestro['id_distrito'] = maestro['id_distrito'].astype(str).str.extract(r'(\d+)').astype(float)
         
-        # Cruzar datos del Scraper con el Maestro
+        #cruza los datos del scraper con el maestro
         df_unificado = pd.merge(df_realtime, maestro, on='id_sensor', how='inner')
         
-        # Agrupar para obtener la media por distrito hoy
+        #media de intensidad por distrito hoy
         df_final = df_unificado.groupby(['dia', 'mes', 'año', 'id_distrito'])['intensidad'].mean().reset_index()
         df_final.rename(columns={'intensidad': 'trafico_medio'}, inplace=True)
         df_final['nombre_distrito'] = df_final['id_distrito'].map(DISTRITOS)
@@ -91,14 +91,11 @@ if __name__ == "__main__":
         resultado_final = integrar_con_distritos(datos_crudos)
         
         if not resultado_final.empty:
-          
             BASE_DIR = os.path.dirname(os.path.abspath(__file__))
             DIR_RES = os.path.join(BASE_DIR, "Resultados")
             os.makedirs(DIR_RES, exist_ok=True)
-            
             ruta_csv = os.path.join(DIR_RES, "resultado_realtime_distritos.csv")
             resultado_final.to_csv(ruta_csv, index=False, sep=";")
-            
             print(f"\n--- PROCESO COMPLETADO ---")
             print(resultado_final.head(10))
             print(f"\nArchivo guardado en: {ruta_csv}")
